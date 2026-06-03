@@ -109,6 +109,13 @@ Mandatory engine behaviour (enforces [doc 01 §2]):
 
 ---
 
+### 2.7 Scheduled, recurring & collective invoices
+- **Scheduled/deferred** invoices, **recurring** invoices (maintenance/SLA contracts), and
+  **collective invoices (zbirni/skupni račun)** that consolidate many tickets/deliveries for one
+  customer over a VAT period into one multi-line document — full design, legal basis and the
+  fiscal-verification rules in **[doc 09](09-scheduled-collective-invoicing.md)**. (Key rule:
+  scheduling defaults to non-cash, because cash invoices fiscalize at the point of payment.)
+
 ## 3. Parts & purchasing
 
 ### 3.1 Parts catalogue (master data)

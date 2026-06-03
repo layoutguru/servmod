@@ -1,7 +1,8 @@
 # 03 — Data Model
 
 Entities and the invariants that make the system compliant. Notation is database-agnostic
-(maps cleanly to PostgreSQL, the recommended store — doc 04). PII columns are marked 🔒 and
+(targets **MariaDB / InnoDB** as the primary store, with a portable abstraction for other
+RDBMS — [doc 04 §2.1]). PII columns are marked 🔒 and
 are encrypted/access-controlled per [doc 05](05-security-gdpr.md).
 
 ## 1. Entity map (high level)
@@ -112,7 +113,10 @@ Modeled as an Invoice subtype with `sign = -1` to keep one ledger.
    (or, if a strict no-gap is impossible to guarantee under a crash window, reconcile on
    recovery — never silently skip). Document the chosen guarantee in the internal act.
 2. **No edit, no delete** of finalized invoices/credit notes/fiscal records — enforced at the
-   DB (revoke UPDATE/DELETE on those tables from the app role; only INSERT) and app layer.
+   DB **and** app layer. On **MariaDB**: a restricted app DB user **without** UPDATE/DELETE
+   grants on the ledger tables, **plus** `BEFORE UPDATE`/`BEFORE DELETE` triggers that
+   `SIGNAL SQLSTATE '45000'` to hard-block tampering even by a privileged connection. (On
+   PostgreSQL the same is done with `REVOKE` + rules — [doc 04 §2.1].)
 3. **content_hash chaining (optional but recommended):** each ledger row stores the hash of
    the previous finalized document → a hash chain that makes silent back-dating/insertion
    detectable.

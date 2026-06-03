@@ -55,8 +55,13 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 
 - **Role-based access control** ([doc 02 §7]) with **least privilege** as default; permissions
   are granular (per action + per data scope, e.g. "own technician stock only").
-- **Row-level security in PostgreSQL** to enforce scoping at the DB (a technician's queries
-  cannot return another technician's stock or customers they don't serve).
+- **Data scoping** so a technician's queries cannot return another technician's stock or
+  customers they don't serve. On the primary DB (**MariaDB**) this is enforced in the
+  **application/service layer plus scoped DB views** (a mandatory tenant/scope predicate
+  injected by the repository layer, and views that pre-filter by the caller's scope). On
+  engines that support it (PostgreSQL) the same predicate is additionally pushed down as native
+  **row-level security** ([doc 04 §2.1]). Either way the guarantee is identical; scoping is
+  also covered by automated tests (§6).
 - **Segregation of duties:** the person who creates a refund/credit note shouldn't also be the
   sole approver above a threshold; bulk PII export gated to specific roles + step-up + audit.
 - **No standing admin:** admin actions logged; consider time-boxed elevation.
@@ -173,14 +178,15 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 
 ## 8. Backups, DR & business continuity
 
-- **PostgreSQL PITR** + periodic full backups; **immutable/WORM** copy of the 10-year archive
+- **MariaDB point-in-time recovery** (binlog + `mariabackup`) + periodic full backups;
+  **immutable/WORM** copy of the 10-year archive
   (PDF/XML/fiscal payloads) with object-lock so backups themselves can't be ransomware-encrypted
   or tampered.
 - **Backups encrypted**, stored in the **EU**, access-controlled and audited.
 - **Tested restores** (don't trust an untested backup); documented **RPO/RTO**; DR runbook.
 - Continuity for the **48-hour FURS window**: the offline path ([doc 01 §3.6]) means a FURS or
   network outage doesn't stop you trading — but the **PENDING_EOR queue must survive a crash**
-  (it's in durable Postgres) and be drained on recovery.
+  (it's in a durable DB-backed queue) and be drained on recovery.
 
 ---
 
@@ -199,7 +205,7 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 
 - [ ] Passkeys/WebAuthn live; MFA mandatory for finance/admin; SMS-OTP not used for privileged roles.
 - [ ] Step-up auth on finalize/refund/credit-note/bulk-export/period-reopen/user-mgmt.
-- [ ] RBAC + Postgres row-level security; segregation of duties; no standing admin.
+- [ ] RBAC + enforced data scoping (app layer + scoped views on MariaDB; RLS where supported); segregation of duties; no standing admin.
 - [ ] PII encrypted at rest (column-level) + in transit (TLS/mTLS); secrets in KMS/HSM; rotation.
 - [ ] Append-only audit + hash-chained immutable ledger; logs write-once; anomaly alerts.
 - [ ] DPAs with all processors; RoPA maintained; DPO/owner assigned; IP-RS registration as needed.

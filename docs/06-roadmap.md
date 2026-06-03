@@ -10,7 +10,7 @@ size and the build-vs-buy decision ([doc 04 §9]).
 - Obtain **FURS digital certificate**; register **business premises & electronic devices**;
   draft the **internal act** ([doc 01 §3.2]).
 - Engage the **accountant** to confirm rates, thresholds, chart of accounts, report formats.
-- Stand up repo, CI, EU-hosted Postgres, secrets manager, FURS **test** environment.
+- Stand up repo, CI, EU-hosted **MariaDB** (via the portable persistence layer — [doc 04 §2.1]), secrets manager, FURS **test** environment.
 - **Security baseline from day one** (doc 05): TLS, encrypted PII, RBAC skeleton, audit table.
 
 ## Phase 1 — Compliant invoicing + fiscalization (MVP, ~4–6 weeks) ⭐
@@ -83,7 +83,7 @@ core.
 |------|-----------|
 | FURS spec changes / cert expiry | Version-pinned isolated service; expiry alerts; test env in CI. |
 | Numbering gaps under crash | Atomic allocation in finalize txn; recovery reconciliation; documented guarantee. |
-| 48h EOR window missed in an outage | Durable queue in Postgres, drained on recovery, SLA alerting. |
+| 48h EOR window missed in an outage | Durable DB-backed queue, drained on recovery, SLA alerting. |
 | Wrong VAT treatment (rates/reverse charge/margin) | Rates & rules as validity-dated config; accountant sign-off; VIES at source. |
 | Tax retention vs GDPR erasure conflict | Tiered/field-level retention; statutory data preserved, rest erasable ([doc 05 §5.3]). |
 | Build effort underestimated | Consider buying fiscalization/e-SLOG; phase ruthlessly; MVP first. |

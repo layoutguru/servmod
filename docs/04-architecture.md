@@ -20,13 +20,39 @@ it for estimates/invoices/stock, and reuse the Smarty layer + `$_language` dicti
 
 | Concern | Choice | Why |
 |---------|--------|-----|
-| Primary DB | **PostgreSQL** | Transactional integrity for numbering/ledger, row-level security, easy append-only enforcement, JSON for snapshots, strong backup story. |
-| Backend | A typed, well-supported framework (e.g. **PHP 8.x/Laravel** to match existing stack, *or* TypeScript/NestJS, *or* Go) | Match team skills; keep fiscal logic in a small isolated module regardless. |
+| Primary DB | **MariaDB** (10.6 LTS+ / 11.x) on **InnoDB** | Team's choice; mature, transactional (ACID), free/open, great PHP support. Transactional integrity for numbering/ledger via `SELECT … FOR UPDATE`; append-only enforced via grants + triggers; JSON column type for snapshots; robust backup (mariabackup) + replication. |
+| DB portability | **Pluggable persistence layer** (see §2.1) | The app must not hard-depend on MariaDB — keep a thin repository/ORM abstraction so PostgreSQL, MySQL, or another modern RDBMS can be swapped in. |
+| Backend | A typed, well-supported framework (e.g. **PHP 8.x/Laravel** to match existing stack, *or* TypeScript/NestJS, *or* Go) | Match team skills; keep fiscal logic in a small isolated module regardless. Laravel/Doctrine/Prisma all abstract the DB cleanly. |
 | Fiscalization service | **Isolated microservice** (own process, holds the cert) | Blast-radius isolation of the private key; independently testable against FURS test env. |
-| Queue/jobs | **Durable queue** (PostgreSQL-backed or Redis/RabbitMQ) | EOR retry, e-invoice dispatch, forecasting jobs. |
+| Queue/jobs | **Durable queue** (DB-backed table, or Redis/RabbitMQ) | EOR retry, **scheduled & recurring invoices** ([doc 09](09-scheduled-collective-invoicing.md)), e-invoice dispatch, forecasting jobs. |
 | Frontend | Server-rendered + progressive JS, mobile-first technician views | Counter speed + van use. |
 | Cache | Redis (optional) | Catalogue, stock levels. |
 | Object/WORM store | S3-compatible with **object-lock / immutability** | 10-year retention of PDFs/XML/fiscal payloads (doc 01 §8). |
+| Frontend UI/UX | **Modern dark/light "Apple-glass" design system** | Full spec in [doc 08](08-ui-design-system.md). |
+
+### 2.1 Database portability layer (MariaDB-first, not MariaDB-only)
+
+MariaDB is the **primary** target, but the persistence layer is **pluggable** so another
+modern RDBMS (PostgreSQL, MySQL, etc.) can be substituted with config, not a rewrite:
+
+- **Access only through a repository / ORM abstraction** (Eloquent + query builder, or
+  Doctrine DBAL, or Prisma). No raw vendor-specific SQL in business code; vendor-specific bits
+  live behind a `DatabaseDriver` interface.
+- **Stick to portable types & features:** `DECIMAL` for money (never float), `DATETIME`/UTC,
+  standard constraints/foreign keys, `JSON` columns (supported by MariaDB, MySQL, PostgreSQL).
+- **Migrations are vendor-neutral** (framework migration files), with a per-driver hook for the
+  few divergent pieces (see below).
+- **Where engines differ, abstract it:**
+  - *Append-only enforcement* — Postgres can `REVOKE UPDATE/DELETE`; **MariaDB uses
+    `BEFORE UPDATE`/`BEFORE DELETE` triggers that `SIGNAL SQLSTATE` on the ledger tables**, plus
+    a restricted app DB user. Same guarantee, driver-specific implementation ([doc 03 §6]).
+  - *Row scoping* — Postgres has native RLS; **MariaDB enforces scoping in the app/service
+    layer + scoped views** ([doc 05 §2]). The security guarantee is identical; only the
+    enforcement point moves.
+  - *Sequences/numbering* — both use a transactional counter row with `SELECT … FOR UPDATE`
+    inside the finalize transaction ([doc 03 §6]); avoid `AUTO_INCREMENT` for fiscal numbers.
+- **CI runs the test suite against MariaDB (primary) and at least one alternate** to keep the
+  abstraction honest.
 
 ## 3. Service decomposition
 
@@ -50,10 +76,10 @@ it for estimates/invoices/stock, and reuse the Smarty layer + `$_language` dicti
   └──────┬────────┘
          │ durable queue (PENDING_EOR), worker drains, ≤48h SLA + alerting
          ▼
-   PostgreSQL (immutable ledger)  +  WORM archive (PDF/XML/payloads)
+   MariaDB (immutable ledger)  +  WORM archive (PDF/XML/payloads)
 ```
 
-All services share the Postgres immutable ledger but only the **Sales** service may INSERT
+All services share the MariaDB immutable ledger but only the **Sales** service may INSERT
 invoices; the DB role enforces no-UPDATE/DELETE on ledger tables ([doc 03 §6]).
 
 ## 4. The FURS fiscalization microservice (the compliance heart) — [doc 01 §3]
@@ -110,7 +136,7 @@ Responsibilities:
   schema migrations reviewed; no secrets in repo.
 - **Observability:** structured logs (PII-redacted), metrics on EOR latency & PENDING_EOR
   backlog, alerts on the 48h SLA, cert expiry, queue depth, failed VIES, period-close status.
-- **Backups & DR:** PITR on Postgres, immutable archive replication, tested restores —
+- **Backups & DR:** point-in-time recovery (MariaDB binlog + `mariabackup`), immutable archive replication, tested restores —
   see [doc 05 §backups].
 
 ## 8. Performance & concurrency notes
