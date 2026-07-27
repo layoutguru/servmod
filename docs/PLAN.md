@@ -1,6 +1,6 @@
 # servmod ERP — Complete Design & Compliance Plan
 
-_Single-file edition — auto-assembled from the canonical chapter files in `docs/` (01–11). Generated 2026-06-03. If anything here and a chapter file disagree, the chapter file wins._
+_Single-file edition — auto-assembled from the canonical chapter files in `docs/` (01–11), post-QA revision. If anything here and a chapter file disagree, the chapter file wins._
 
 > ⚠️ **Not legal/tax advice.** Engineering design grounded in public sources (FURS technical documentation, ZDDV-1, ZDavPR, SRS 2024, SPOT/EU guidance). Slovenian tax/accounting law changes frequently — every rate, threshold, deadline, report format and legend must be confirmed with the company's accountant (računovodja) and against the current FURS technical specification before go-live.
 
@@ -28,7 +28,7 @@ holds customer personal data so it must be **GDPR-grade secure**.
 - [06 — Delivery Roadmap](#doc06)
 - [07 — Accounting Standards (Slovenia & EU)](#doc07)
 - [08 — UI / UX Design System ("servmod glass")](#doc08)
-- [09 — Scheduled, Recurring & Collective Invoices (zbirni/skupni račun)](#doc09)
+- [09 — Scheduled, Recurring & Collective Invoices (zbirni račun)](#doc09)
 - [10 — ServiceApp Integration & Billing Migration](#doc10)
 - [11 — Outside-the-Box Features (high-value extensions)](#doc11)
 
@@ -74,12 +74,17 @@ written here.
 
 ### 1.2 Who must charge VAT
 - A business becomes liable to register for VAT once taxable turnover in the last 12 months
-  exceeds the registration threshold (historically **€50,000**, with an EU SME cross-border
-  scheme on top). **Confirm the current threshold.** Below it, a business may be a
+  exceeds the registration threshold of **€60,000** (raised from €50,000 by the ZDDV-1
+  amendment effective **1 Jan 2025**; a transitional tolerance up to **€66,000** lets a
+  business that only marginally exceeds it stay unregistered mid-year, and the EU cross-border
+  SME scheme adds a €100,000 EU-wide cap on top). Below it, a business may be a
   *small taxpayer* (mali davčni zavezanec) and issues invoices **without VAT**, with the
   legend *"DDV ni obračunan na podlagi 1. odstavka 94. člena ZDDV-1"* (or the applicable
   article). The ERP must support **both modes** via a company-level flag, because kron.si may
   be VAT-registered today but the software should not hard-code it.
+- **VAT grouping** exists in Slovenia since **1 Jan 2026**: related companies may register as
+  a single VAT group. Out of scope for a single-entity shop, but if kron.si has affiliated
+  companies, the company model must be revisited (a single company flag can't model a group).
 
 ### 1.3 Tax point / chargeability
 VAT generally becomes chargeable when the supply is made (repair completed / parts handed
@@ -110,7 +115,7 @@ A **full invoice** for a VAT taxpayer must show:
 9. **VAT amount payable** (per rate), unless a special scheme applies.
 10. In case of **exemption / reverse charge / margin scheme**: the relevant **clause**
     referencing the ZDDV-1 article or the Directive 2006/112/EC article, or the wording
-    *"Reverse charge" / "Obrnjena davčna obveznost"*, *"Maržna ureditev — rabljeno blago"*,
+    *"Reverse charge" / "Obrnjena davčna obveznost"*, *"Posebna ureditev – rabljeno blago"*,
     *"Oproščeno DDV po … členu ZDDV-1"*, etc.
 11. If self-billed: *"Samofakturiranje"*. If a tax representative is liable: their details.
 
@@ -135,6 +140,15 @@ fiscalization is finalized.
 - Rounding: compute VAT per rate group on the summed net, then round to **2 decimals**
   (round-half-up). Keep line-level values at higher precision internally to avoid drift; the
   *printed* totals must foot exactly.
+- **Line-level distribution (canonical algorithm):** because the document also shows per-line
+  net/VAT/gross (and e-SLOG requires line-level VAT fields), the once-rounded **rate-group VAT
+  total is redistributed to lines by largest remainder** (the N residual cents go to the N lines
+  with the largest fractional remainders) so that line VAT amounts **always sum exactly** to
+  the rate-group total. This — true largest-remainder — is the single canonical algorithm;
+  do not substitute "push everything onto the last line", which is a *different* algorithm
+  and would make renderers disagree. The PDF renderer, the fiscal
+  payload and the e-SLOG exporter all reference this one algorithm — never three independent
+  roundings.
 
 ---
 
@@ -153,14 +167,28 @@ fiscally verified by FURS in real time, before it is handed to the customer.**
   small (non-VAT) taxpayers**. So even if kron.si were below the VAT threshold, cash invoices
   still need fiscalization.
 
-> **Design consequence:** the *payment method* chosen at the point of issue decides whether the
-> document must go through the FURS round-trip. The ERP must therefore know the payment method
-> **at issue time**, and re-fiscalize if a draft is later paid in cash.
+> **Design consequence:** whether the document must go through the FURS round-trip is decided
+> by **how it is actually (to be) paid at issue time** — derived from the payment(s) recorded/
+> expected on the invoice, not a single header field. Three hard rules the engine enforces:
+>
+> 1. **Mixed payment (part cash/card, part transfer):** if **any** cash-type payment touches
+>    the invoice at issue, the invoice is **fiscalized** (fiscalize-if-any-cash; confirm the
+>    exact convention with the accountant, but default to fiscalizing the whole document —
+>    never leave a cash-touched invoice unverified).
+> 2. **Draft later paid in cash:** a *draft* is fiscalized at the moment cash is taken.
+> 3. **Finalized non-cash invoice later settled in cash** (customer said "transfer", pays cash
+>    at pickup): the finalized document is immutable and **cannot retroactively become
+>    fiscalized**. The engine must either (a) for walk-in retail, defer finalize until the
+>    payment method is confirmed at handover, or (b) if already finalized as non-cash, cancel
+>    via credit note and reissue as a fiscalized cash invoice at the moment of payment. Both
+>    paths are first-class UI flows, not workarounds.
 
 ### 3.2 Prerequisites (one-time setup, before the first fiscalized invoice)
-1. **Dedicated digital certificate** for fiscal verification, obtained from FURS (the
-   issuance was moved to FURS; previously MJU). Used to sign the ZOI and authenticate to the
-   FURS web service.
+1. **Dedicated digital certificate** for fiscal verification. The request is submitted via
+   **eDavki** (FURS, form DPR-PridobitevDP), and the certificate (.p12) is then generated and
+   downloaded from the **MJU (Ministry of Public Administration) digital-certificate portal**
+   using the reference number/password issued through eDavki — both agencies are involved.
+   Used to sign the ZOI and authenticate to the FURS web service.
 2. **Register every business premises** (`poslovni prostor`) via **eDavki** *before* issuing
    the first invoice from it. Each gets a **Business Premises ID** (you choose the label).
    Premises can be **immovable** (a shop — needs the cadastral data: building/part numbers) or
@@ -178,14 +206,19 @@ The number is a **three-part token**:
 
 ```
 <BusinessPremisesID>-<ElectronicDeviceID>-<SequentialNumber>
-e.g.  POSLOVALNICA1-BLAG1-2026-000123   (label format is your choice within rules)
+e.g.  POSLOVALNICA1-BLAG1-000123   (label format is your choice within rules)
 ```
-- The **sequential number must be continuous, gapless, and ascending** per (premises, device)
-  combination within a **calendar year** (reset annually only if your internal act says so —
-  many keep continuous; **decide in the internal act and encode that choice as config**).
+- **Numbering mode is a legal choice (ZDavPR Art. 5), fixed in the internal act:** the gapless
+  ascending sequence runs either **(a) centrally per business premises** (one sequence shared
+  by all electronic devices in that premises) **or (b) per individual electronic device**.
+  The ERP must support both modes as tenant config and enforce the chosen one consistently —
+  do not assume the (premises, device) pair is itself the unit of continuity.
+- The **sequential number must be continuous, gapless, and ascending** within the chosen unit,
+  with the reset period (annual vs continuous) likewise **defined in the internal act and
+  encoded as config** (`reset_policy`).
 - The ERP must guarantee **no gaps and no reuse**, even under concurrency/crash — see
-  [doc 03 §numbering](#doc03) (DB sequence per premises+device, allocated inside the
-  same transaction that persists the invoice).
+  [doc 03 §numbering](#doc03) (DB sequence allocated inside the same transaction
+  that persists the invoice).
 
 ### 3.4 ZOI — Zaščitna oznaka izdajatelja (issuer protective mark)
 Computed **locally by the ERP** (proves the invoice originated from you even if FURS is
@@ -216,11 +249,15 @@ The ZOI is printed on the receipt and embedded in the QR/PDF417/Code128.
 ### 3.6 Offline / FURS-unreachable path (must be designed, not optional)
 - If FURS cannot be reached at issue time, you **may still issue** the invoice **with the ZOI
   only** (no EOR yet).
-- You **must obtain the EOR within 48 hours (2 business days)** by re-sending the stored
-  invoice once connectivity returns.
+- You **must obtain the EOR within two working days (dva delovna dneva)** from the day the
+  connection was interrupted, by re-sending the stored invoice once connectivity returns.
+  This is a **working-day count, not a rolling 48-hour clock** (a Friday-afternoon outage
+  extends over the weekend). If justified reasons persist beyond that window, the data must be
+  sent **no later than the first working day after the reason ceases**.
 - The ERP needs a **durable retry queue** of un-verified invoices, a worker that drains it,
-  alerting if anything approaches the 48h limit, and a way to reprint/record the EOR once
-  received. **This queue is mission-critical** — see [doc 04 §FURS service](#doc04).
+  alerting as the two-working-day deadline approaches (computed against the SI working-day
+  calendar), and a way to reprint/record the EOR once received. **This queue is
+  mission-critical** — see [doc 04 §FURS service](#doc04).
 
 ### 3.7 The QR / barcode on the receipt
 - The receipt carries a machine-readable code (**QR**, or **PDF417**, or **Code 128**)
@@ -250,7 +287,7 @@ The ZOI is printed on the receipt and embedded in the QR/PDF417/Code128.
 ### 4.1 Domestic reverse charge (ZDDV-1 Art. 76.a)
 Liability shifts to the **buyer** for specific listed supplies — principally **construction
 work, supply of staff for it, certain immovable property, waste/scrap & recyclable material,
-and greenhouse-gas allowances**. These require the legend *"Obrnjena davčna obveznost"* and a
+and (commonly cited but **unverified for the SI list — confirm with the accountant**) greenhouse-gas emission allowances**. These require the legend *"Obrnjena davčna obveznost"* and a
 **special Art. 76.a report**.
 - **Relevance to us:** mostly when **selling scrap/e-waste** (old boards, batteries handed to
   a recycler that is a taxable person) → may fall under the **waste/scrap** category. Build the
@@ -282,7 +319,7 @@ and greenhouse-gas allowances**. These require the legend *"Obrnjena davčna obv
 If kron.si **buys and resells used devices** (trade-ins, refurbished phones bought from
 private individuals/non-taxable persons), the **margin scheme** lets you charge VAT only on
 the **margin** (sale − purchase), not the full price, and **no VAT is shown separately** on the
-sale invoice — instead the legend *"Posebna ureditev — rabljeno blago / margin scheme"*.
+sale invoice — instead the exact statutory legend *"Posebna ureditev – rabljeno blago"* (an English gloss may accompany it for the customer, but the Slovenian wording is the mandated text).
 - The ERP must support a **margin-scheme item type**: track per-unit purchase cost, compute
   VAT on margin, suppress the VAT breakdown on the customer document, and keep a **separate
   margin-scheme register**. Standard-VAT and margin-scheme lines **cannot** be mixed loosely;
@@ -290,10 +327,18 @@ sale invoice — instead the legend *"Posebna ureditev — rabljeno blago / marg
 
 ### 4.5 Warranty repairs
 - Repair done under **manufacturer warranty**, billed to the **manufacturer/importer** (not
-  the consumer): a normal B2B invoice to the warrantor (22 %, or reverse charge / intra-EU if
-  the warrantor is abroad). The consumer pays €0 but **still receives documentation**; if no
-  payment is taken, no fiscal verification is triggered (no cash). Model "warranty payer" as
-  a billing party distinct from the device owner.
+  the consumer). Model "warranty payer" as a billing party distinct from the device owner.
+- **Consumer-side document:** the consumer receives a **non-fiscal handover/delivery note**
+  (prevzemni list) documenting the warranty work — *not* a €0 tax invoice; no payment → no
+  fiscal verification.
+- **Warrantor-side invoice & place of supply:** a normal B2B service invoice to the warrantor.
+  If the warrantor is a **Slovenian** taxable person → 22 %. If the warrantor is a taxable
+  person **in another EU state** → the B2B general place-of-supply rule (Art. 44 of Directive
+  2006/112/EC / ZDDV-1 Art. 25) puts the supply where the recipient is established: invoice
+  **without Slovenian VAT**, legend *"Reverse charge — Obrnjena davčna obveznost"*, and report
+  it in the **RP-O**. If the warrantor is **outside the EU** → outside the scope of Slovenian
+  VAT (with the appropriate legend). The engine derives this from the warrantor's country +
+  VAT ID (VIES-checked), same logic as any B2B service export.
 
 ---
 
@@ -321,8 +366,10 @@ document**:
   charge). Must contain all Art. 82 elements **plus an explicit reference to the original
   invoice** (number + date) and the reason. VAT is corrected per ZDDV-1 (the supplier reduces
   output VAT; if the buyer deducted input VAT they must correct it — the document is the
-  evidence). If the original was a **cash** invoice, the credit note that returns cash is
-  **itself fiscally verified** (it's a cash transaction → ZOI/EOR).
+  evidence). **A credit note that itself pays out cash is fiscally verified (ZOI/EOR),
+  regardless of how the original invoice was paid** — fiscalization always follows the actual
+  cash flow of the document at hand (§3.1), so a bank-transfer original refunded in cash at
+  the counter still produces a fiscalized credit note.
 - **Debit note (bremepis):** increases the original (under-charged). Same referencing rules.
 - **Storno (full cancellation):** a credit note for the full amount; the original remains in
   the ledger (visible, marked corrected) — it is *not* removed.
@@ -364,6 +411,11 @@ document**:
 
 - **VAT ledgers:** keep the **issued-invoices book** and **received-invoices book** (knjiga
   izdanih/prejetih računov) with all data needed for the VAT return. The ERP generates both.
+- **Mandatory electronic ledger submission (since 1 Jul 2025):** every VAT payer must submit
+  the output-VAT ledger (evidenca obračunanega DDV) and input-VAT-deduction ledger (evidenca
+  odbitka DDV) to FURS as **structured XML via eDavki**, on the same monthly/quarterly cadence
+  as the DDV-O. Submitting ≥3 working days before the DDV-O deadline yields a FURS-prepared
+  **pre-filled DDV-O**. The ERP's ledger export must conform to this XML schema exactly.
 - **Retention:** **invoices and accounting records — 10 years**; **real-estate-related — 20
   years**. Records must remain **authentic, integral and legible** for the whole period.
 - **Electronic storage** is permitted if it prevents alteration/deletion and allows
@@ -371,17 +423,23 @@ document**:
   integrity hashing (doc 05).
 - **VAT return (DDV-O):** typically **monthly** (or quarterly for smaller taxpayers), due by a
   fixed day of the following month; **RP-O** recapitulative by the 20th. The ERP must export
-  the figures that populate each box of **DDV-O**, **PD-O**, **RP-O**, and the **Art. 76.a
-  report** where used.
+  the figures that populate each box of **DDV-O**, **RP-O**, and the **Art. 76.a report
+  (FURS form PD-O)** where used — PD-O is the 76.a report's form name, not a separate export.
 
 ---
 
 ## 9. Consumer-protection / sector rules that touch the documents
 
 - **Repair estimates & consent:** Slovenian consumer-protection practice expects a **cost
-  estimate (predračun)** and customer approval before chargeable work, and a **warranty on the
-  repair** itself. Model: estimate → customer approval (timestamped, ideally e-signed) →
-  work → invoice.
+  estimate (predračun)** and customer approval before chargeable work. Model: estimate →
+  customer approval (timestamped, ideally e-signed) → work → invoice.
+- **Warranty legal bases (keep them distinct in the model):** ZVPot-1's mandatory **garancija
+  za brezhibno delovanje** (≥1 year) applies to the **sale of listed technical goods**, and
+  under the current ZVPot-1 claims run **against the manufacturer**, with sellers owing 3
+  years of paid after-sales servicing post-guarantee. **Defect liability for the repair
+  service itself** is governed by the **Code of Obligations (Obligacijski zakonik, Arts. 619
+  ff. — podjemna pogodba)**, not ZVPot-1 directly. The ERP tracks both: goods-sale guarantees
+  (trade-ins/refurbished sales) and repair-work defect liability, with separate clocks.
 - **Warranty / guarantee tracking:** track the repair warranty period and the parts' supplier
   warranty (for your own RMA back to the supplier).
 - **WEEE / battery handling:** disposal of e-waste and batteries has environmental-fee and
@@ -397,9 +455,9 @@ document**:
 |-------------|-------------|-----|
 | Art. 82 invoice fields present | Invoice template + validation gate before finalize | 02 §invoices, 03 |
 | Simplified invoice ≤ €100 + buyer details when deductible | Document-type rules | 02 |
-| Gapless sequential numbering per premises+device | DB sequence inside finalize txn | 03 |
+| Gapless numbering in the internal-act-chosen mode (per premises OR per device) | DB sequence inside finalize txn | 03 |
 | ZOI computed (RSA-SHA256 → MD5 → 32 hex) | FURS fiscalization service | 04 |
-| EOR obtained in real time; ≤48h offline fallback | Durable verification queue + worker | 04 |
+| EOR real-time; offline fallback ≤ 2 working days (SI calendar) | Durable verification queue + worker | 04 |
 | QR/PDF417 + ZOI/EOR/operator on receipt | Receipt renderer | 02, 04 |
 | Business premises + devices registered; internal act | Setup/admin module + config | 02, 03 |
 | Operator tax number on each cash invoice | User profile (encrypted PII) | 03, 05 |
@@ -407,9 +465,9 @@ document**:
 | Intra-EU acquisition reverse charge + VIES + RP-O | Purchasing module + tax engine | 02, 04 |
 | Intrastat threshold tracking & alert | Reporting module | 02 |
 | Margin scheme register (if reselling used) | Item type + separate register | 02, 03 |
-| e-SLOG 2.0 / EN 16931 export; UJP for B2G | e-invoice exporter (render target) | 04 |
+| e-SLOG 2.0 / EN 16931 export incl. doc-type codes (380/381/386); UJP for B2G | e-invoice exporter (render target) | 04 |
 | 10-year immutable, legible retention | WORM archive + integrity hashes | 05 |
-| DDV-O / PD-O / RP-O / 76.a exports | Reporting module | 02 |
+| DDV-O / RP-O / Art. 76.a (form PD-O) exports; VAT-ledger XML to eDavki (mandatory since 1 Jul 2025) | Reporting module | 02 |
 | Personal data protected (GDPR/ZVOP-2) | Whole of doc 05 | 05 |
 
 ---
@@ -477,7 +535,10 @@ Customer & device intake
         ▼
 Diagnosis ──► Estimate (predračun)  ──► Customer approval (timestamped/e-signed)
         │                                        │
-        │                                  declines → return device, close, (diag fee?)
+        │                                  declines → diagnostic-fee invoice (if charged,
+        │                                  own small invoice, fiscalized per payment method;
+        │                                  or explicit waive) → advance refunded via credit
+        │                                  note if one was taken → return device, close
         ▼
 Parts reservation ──► (parts in stock? ) ──► if not: Purchase Order → Goods receipt
         ▼
@@ -492,6 +553,11 @@ Invoice issued  ──► payment method?
 Payment recorded ──► device handed over ──► repair warranty starts
         ▼
 (Later) return/complaint → Credit note (dobropis), itself fiscalized if cash refund
+
+Not collected? Ready-for-pickup ──(configurable clock)──► ready_uncollected
+        ├─ periodic storage-fee lines (configurable, announced in T&Cs at intake)
+        ├─ formal notice(s) to customer (documented, per abandoned-goods rules)
+        └─ terminal: disposed (WEEE write-off) / sold to recover costs / scrapped
 ```
 
 Each transition is a **state**, each state change is **audit-logged** (doc 05), and the
@@ -514,6 +580,9 @@ later credit note.
 - If paid in cash/card → **fiscalized**.
 - On final invoice, the advance is **deducted** with a reference line; net cash collected at
   the end matches.
+- **Advance refund (repair declined / device unrepairable):** a credit note is issued
+  **against the advance invoice itself** (not against any final invoice), fiscalized if the
+  refund is paid out in cash; the ticket closes with status `advance_refunded`.
 
 ### 2.3 Invoice (račun) — the central document
 Mandatory engine behaviour (enforces [doc 01 §2]):
@@ -535,9 +604,15 @@ Mandatory engine behaviour (enforces [doc 01 §2]):
   "promote to full invoice" adds buyer details (required if the buyer needs to deduct VAT).
 
 ### 2.4 Payments & cash handling
-- Record payment(s) against an invoice; partial payments allowed. Payment method drives
-  fiscalization. Cash drawer / daily Z-report (gotovinski izkupiček) per business premises &
-  operator for reconciliation.
+- Record payment(s) against an invoice; partial payments allowed. Fiscalization is derived
+  from the **aggregate of payments** (any cash-type payment ⇒ fiscalize; mixed and
+  flipped-method cases per the hard rules in [doc 01 §3.1]).
+- **Cash sessions (drawer management):** each premises/operator works inside a **CashSession**
+  — opened with a counted **opening float**, records non-sale **cash movements** (petty cash
+  in/out with reason), and closes with a counted total vs the computed expected amount; the
+  **variance** is recorded and must be explained. The daily **Z-report** (gotovinski
+  izkupiček) is a generated document referencing the session and every fiscal receipt issued
+  within it. Entities in [doc 03 §5].
 - POS/card terminal integration optional (capture card vs cash split).
 
 ### 2.5 Credit / debit notes & storno (enforces [doc 01 §6])
@@ -558,7 +633,7 @@ Mandatory engine behaviour (enforces [doc 01 §2]):
 
 ### 2.7 Scheduled, recurring & collective invoices
 - **Scheduled/deferred** invoices, **recurring** invoices (maintenance/SLA contracts), and
-  **collective invoices (zbirni/skupni račun)** that consolidate many tickets/deliveries for one
+  **collective invoices (zbirni račun)** that consolidate many tickets/deliveries for one
   customer over a VAT period into one multi-line document — full design, legal basis and the
   fiscal-verification rules in **[doc 09](#doc09)**. (Key rule:
   scheduling defaults to non-cash, because cash invoices fiscalize at the point of payment.)
@@ -588,6 +663,20 @@ Mandatory engine behaviour (enforces [doc 01 §2]):
 ### 3.4 RMA to supplier
 - Defective/wrong parts returned to supplier under their warranty; tracked so a customer-side
   warranty repair can be reclaimed.
+
+### 3.5 Purchase returns & supplier credit notes
+- Wrong/damaged/over-delivered goods (outside warranty RMA) go back with a **purchase return**:
+  a reversing StockMovement (return-to-supplier) plus a **SupplierCreditNote** referencing the
+  original supplier invoice / goods receipt — correcting the **received-invoices VAT ledger**
+  (input-VAT reduction in the period the credit note is issued) and the previously posted
+  landed cost/valuation ([doc 07]). Entity in [doc 03 §8].
+
+### 3.6 Pricing & price lists
+- Prices resolve through **validity-dated price lists**: customer/contract price list →
+  shop/location list → default catalogue price ([doc 03 §7]). B2B fleet/SLA customers get
+  negotiated rates; recurring profiles ([doc 09]) reference a price list. The resolved price
+  is **snapshotted onto the invoice line** (same pattern as the VAT rate) so later list
+  changes never mutate issued documents.
 
 ---
 
@@ -627,6 +716,14 @@ Every part has a **quantity per location**. Movements are the only way stock cha
 | Adjustment (stocktake) | ± with reason, approval, audit |
 | Write-off (damaged/WEEE) | − with reason + disposal record (doc 01 §9) |
 
+**Hard stock rules:**
+- **No negative stock:** a consumption/transfer that would drive `qty_on_hand` below zero at a
+  location is **blocked**; an elevated-permission override (with mandatory reason, audited)
+  exists for the real-world "technician consumed from central without transferring first" case
+  — the override records the implied transfer rather than going negative silently.
+- **Stocktake freeze:** a location in `stocktake_in_progress` blocks new transfers/consumptions
+  against it until the count closes; late movements are logged as post-count adjustments.
+
 ### 5.2 Technician warehouses — the key design point
 - When a technician takes parts from central, that's a **transfer** → the parts now live in
   *their* location and are *their* accountability.
@@ -642,6 +739,11 @@ Every part has a **quantity per location**. Movements are the only way stock cha
 ### 5.3 Serialized & batch parts
 - Serialized parts (expensive components) tracked individually end-to-end (which serial went
   into which device/ticket) — supports warranty/recall and theft control.
+- **DOA / mid-repair part swap:** if an installed part turns out dead-on-arrival, the flow is:
+  reverse the original consumption with a movement **tagged for supplier RMA** (never back to
+  sellable stock), consume the replacement serial, and — if the original was already invoiced —
+  issue a credit note + replacement line pair referencing the original document (immutability
+  preserved, [doc 01 §6]); `SerialUnit.warranty_until` reflects the part actually installed.
 
 ### 5.4 Valuation
 - Inventory valued per SRS/IAS 2 — **weighted-average or FIFO** at cost (purchase price +
@@ -653,11 +755,18 @@ Every part has a **quantity per location**. Movements are the only way stock cha
 ## 6. Export, reporting & accountant hand-off
 
 ### 6.1 Statutory / tax exports ([doc 01 §8])
-- **VAT books:** issued-invoices and received-invoices ledgers.
-- **DDV-O** figures (VAT return), **PD-O**, **RP-O** (recapitulative/EC Sales List), **Art.
-  76.a report** when used.
+- **VAT books:** issued-invoices and received-invoices ledgers — **submitted to FURS as
+  structured XML via eDavki every period (mandatory since 1 July 2025**, [doc 01 §8]).
+- **DDV-O** figures (VAT return), **RP-O** (recapitulative/EC Sales List), and the **Art.
+  76.a report (form PD-O)** when used.
 - **Intrastat** dataset + threshold-tracking alert.
-- All exportable as the **eDavki-expected formats** and as CSV/XLSX for the accountant.
+- All exportable in the **eDavki XML schemas** and as CSV/XLSX for the accountant.
+
+### 6.1a Receivables & dunning (B2B on-credit invoices)
+- Overdue-invoice dashboard (ageing buckets), **configurable reminder cadence** (email/SMS,
+  per-locale templates), optional statutory late-payment interest line, escalation notes, and
+  a privileged **write-off to bad debt** action posting per [doc 07 §5]. Ties the operational
+  collections flow to the accounting treatment.
 
 ### 6.2 Accounting integration
 - **Journal export** to the accounting package (e.g. via the unified chart-of-accounts mapping,
@@ -716,7 +825,8 @@ Part ──< StockLevel(per Location) ; Part ──< SupplierPart
 PurchaseOrder ──< POLine ; GoodsReceipt ──< GRLine
 StockMovement (the ONLY mutator of stock)
 Supplier 🔒(VAT id) ; Location (incl. per-technician)
-AuditEvent (append-only) ; immutable FiscalLedger (append-only)
+AuditEvent (append-only)   [the "immutable fiscal ledger" = the finalized, append-only
+                            Invoice/CreditNote/FiscalRecord rows — not a separate table]
 ```
 
 ## 2. Configuration & fiscal setup
@@ -735,7 +845,11 @@ chart mapping ref.
 **TaxRate**: `code` (S/R1/R2/Z/E/AE/R), `percent`, `valid_from`, `valid_to`, `legend_text`
 (printed for exemption/reverse/margin). Never deleted — superseded by date.
 
-**NumberSequence**: `(premises_id, device_id, series, year)` → `next_value`. Allocation is
+**NumberSequence**: keyed by the **numbering mode chosen in the internal act** ([doc 01 §3.3],
+ZDavPR Art. 5): mode (a) per business premises → `(premises_id, series, [year])`; mode (b) per
+electronic device → `(premises_id, device_id, series, [year])`. The `year` component is
+present only when `reset_policy = annual` (vs `continuous`) — both the mode and the reset
+policy are company/series config, so **both legal choices are representable**. Allocation is
 atomic (see §6). Series also exist for non-cash invoices, credit notes, estimates, POs.
 
 ## 3. People & parties
@@ -756,8 +870,11 @@ accessories, condition-in notes, photos.
 
 ## 4. Tickets, estimates, stock-on-job
 
-**Ticket**: number, customer, device, status (state machine — doc 02 §1), assigned technician,
-intake notes, fault, diagnosis, warranty flag + warranty payer, timestamps, consent record ref.
+**Ticket**: number, customer, device, status (state machine — doc 02 §1, including
+`ready_uncollected` → `disposed`/`sold`/`scrapped` for abandoned devices, and
+`advance_refunded`), assigned technician, intake notes, fault, diagnosis, warranty flag +
+warranty payer, timestamps, consent record ref, storage-fee accrual ref (uncollected devices),
+notice log (formal abandoned-goods notices sent).
 
 **Estimate**: number (non-tax series), ticket, lines, totals, status (draft/sent/approved/
 declined), approval record (who/when/how 🔒 ip).
@@ -775,7 +892,11 @@ declined), approval record (who/when/how 🔒 ip).
 - `premises_id`, `device_id`, `operator_user_id` (+ operator tax_number snapshot 🔒),
 - `customer_snapshot` (JSON: name/address/vat_id at issue) 🔒,
 - `warranty_payer_snapshot` (nullable),
-- `issue_datetime`, `supply_date`, `due_date`, `payment_method`,
+- `issue_datetime`, `supply_date`, `due_date`,
+- `expected_payment_methods` (informational; **fiscalization is derived from actual
+  `Payment` rows — any cash-type payment ⇒ fiscalize**, [doc 01 §3.1]),
+- `origin` (manual/scheduled/recurring/collective), `recurring_profile_id` (nullable),
+  `period_start`/`period_end` (collective),
 - `currency`, `fx_rate` (+ EUR equivalents if non-EUR),
 - totals per VAT-rate group (`net`, `vat`, `gross`), grand totals,
 - `legends` (reverse charge / margin / exemption / small-taxpayer text),
@@ -785,10 +906,21 @@ declined), approval record (who/when/how 🔒 ip).
 
 **InvoiceLine**: invoice, seq, `line_type` (labour/part/part_margin/accessory/fee/discount/
 advance_deduction/weee/reverse_charge), description, qty, unit, unit_price_net, discount,
-`vat_rate_ref` (the rate **as of supply_date**), net, vat, gross, `margin_cost` (for
-margin-scheme lines), source refs (part_id / ticket_line_id).
+`vat_rate_ref` (the rate **as of supply_date**), `price_list_ref` (resolved price snapshot),
+net, vat, gross (line VAT distributed from the rate-group total by largest remainder,
+[doc 01 §2.2]), `margin_cost` (for margin-scheme lines), `source_ref` (part_id /
+ticket_line_id / delivery) with a **uniqueness guard**: a source item is `uninvoiced` →
+`invoiced` (atomic at finalize) → `credited` (when a credit-note line references the same
+`source_ref`; re-billing after crediting is a deliberate, audited action, never automatic —
+[doc 09 §2.3]).
 
-**Payment**: invoice, amount, method, datetime, operator, (card auth ref).
+**Payment**: invoice, amount, method, datetime, operator, (card auth ref), `cash_session_id`
+(for cash-type payments).
+
+**CashSession** (drawer management, [doc 02 §2.4]): premises, operator, `opened_at`/`closed_at`,
+`opening_float`, `closing_counted`, `computed_expected`, `variance` + explanation, status.
+**CashMovement**: session, direction (in/out), amount, reason, ref, operator, datetime.
+The daily **Z-report** is a generated document referencing the session and its fiscal receipts.
 
 **CreditNote / DebitNote**: own number/series, `original_invoice_id` (**required**), reason
 code, lines (full/partial), totals, `is_fiscalized`, `fiscal_record_id`, `content_hash`.
@@ -799,31 +931,48 @@ Modeled as an Invoice subtype with `sign = -1` to keep one ledger.
 - `operator_tax_number` 🔒, `issue_datetime`, premises/device/number echo,
 - `verification_status` (`PENDING_EOR` / `VERIFIED` / `FAILED`),
 - `submitted_at`, `verified_at`, `attempts`, `last_error`,
-- `protocol` (real-time vs subsequent ≤48h), `message_id`.
+- `protocol` (real-time vs subsequent ≤2 working days, [doc 01 §3.6]), `message_id`.
 
 ## 6. Numbering & immutability invariants (critical)
 
-1. **Gapless, ascending** per `(premises, device, series, year)`. Allocate `next_value` with
-   `SELECT ... FOR UPDATE` / `UPDATE ... RETURNING` **inside the same transaction** that
-   inserts the finalized invoice. If the transaction rolls back, the number is **not** burned
-   (or, if a strict no-gap is impossible to guarantee under a crash window, reconcile on
-   recovery — never silently skip). Document the chosen guarantee in the internal act.
+1. **Gapless, ascending** within the internal-act-chosen numbering unit (§2 NumberSequence —
+   per premises or per device, annual or continuous). Allocate `next_value` with
+   `SELECT ... FOR UPDATE` then `UPDATE` **inside the same transaction** that inserts the
+   finalized invoice (note: MariaDB supports `RETURNING` on `INSERT`/`REPLACE`/`DELETE` but
+   **not** on `UPDATE` — read the locked value first or track it in the app). Because the
+   counter increment and the invoice insert commit **in the same transaction**, a rollback or
+   crash reverts both — **gaps are structurally impossible**, not merely mitigated. The only
+   crash window is *after* commit (print/EOR/send failures): recovery is **idempotent
+   re-processing** of the already-committed invoice (resend to FURS keyed by premises/device/
+   number, reprint), never re-allocation. Document this guarantee in the internal act.
 2. **No edit, no delete** of finalized invoices/credit notes/fiscal records — enforced at the
    DB **and** app layer. On **MariaDB**: a restricted app DB user **without** UPDATE/DELETE
    grants on the ledger tables, **plus** `BEFORE UPDATE`/`BEFORE DELETE` triggers that
-   `SIGNAL SQLSTATE '45000'` to hard-block tampering even by a privileged connection. (On
-   PostgreSQL the same is done with `REVOKE` + rules — [doc 04 §2.1].)
-3. **content_hash chaining (optional but recommended):** each ledger row stores the hash of
-   the previous finalized document → a hash chain that makes silent back-dating/insertion
-   detectable.
+   `SIGNAL SQLSTATE '45000'`. This blocks tampering **by the application role**; it does NOT
+   stop a connection holding TRIGGER/SUPER/root privileges (which can drop the trigger or
+   re-grant itself rights). That DBA-level threat is countered *outside* the engine: external
+   hash-chain checkpoints to the WORM archive (§6.3), DB audit-log shipping to a separate
+   trust domain, and strict separation of who holds DBA credentials. (On PostgreSQL the
+   equivalent baseline is `REVOKE` + rules — [doc 04 §2.1].)
+3. **content_hash chaining (required):** each ledger row stores the hash of the previous
+   finalized document. Detection only works with an **external anchor**: the chain head is
+   checkpointed on every finalize (or at least daily) to the **WORM/object-lock archive**
+   ([doc 01 §8]) — optionally RFC 3161-timestamped — and a **scheduled verification job**
+   recomputes the chain and compares against the anchored checkpoints. Without the external
+   anchor the chain only protects against accidental corruption and unprivileged tampering,
+   not a malicious DBA (who could regenerate a self-consistent chain).
 4. **No back-dating into a closed VAT period.** `issue_datetime` validated against period locks.
 5. **PENDING_EOR is a valid issued state** — the document exists with ZOI; EOR fills in later.
 
 ## 7. Inventory
 
-**Part**: SKU, names (SL), oem/aftermarket numbers, compatible models (M:N to device models),
-`vat_rate_ref`, default cost, default price, `is_serialized`, `is_hazardous`/WEEE,
-min/max/reorder point, lead_time_days, supplier warranty days, status.
+**Part**: SKU, names (per-locale SL/EN/DE, [doc 08 §8]), oem/aftermarket numbers, compatible
+models (M:N to device models), `vat_rate_ref`, default cost, default price, `is_serialized`,
+`is_hazardous`/WEEE, min/max/reorder point, lead_time_days, supplier warranty days, status.
+
+**PriceList** ([doc 02 §3.6]): scope (default/shop/customer/contract), `valid_from`/`valid_to`,
+status. **PriceListEntry**: price list, part-or-service, price, discount %. Resolution:
+customer/contract → shop → default; the resolved price is snapshotted on the invoice line.
 
 **Location**: id, type (`central`/`shop`/`technician`/`virtual`), name, owner_user_id (for
 technician warehouses), premises_id.
@@ -848,6 +997,9 @@ status, cost, warranty_until.
 import VAT), creates receipt StockMovements.
 **SupplierInvoice**: matched to PO/GR (3-way), posts to received-invoices VAT ledger,
 reverse-charge entries for EU acquisitions, MRN/import data for imports.
+**SupplierCreditNote** ([doc 02 §3.5]): references the original SupplierInvoice/GoodsReceipt,
+lines, reason, input-VAT correction (received-invoices ledger, period of issue), linked
+return-to-supplier StockMovement; adjusts landed cost/valuation.
 
 ## 9. Forecasting (derived/analytic)
 
@@ -906,7 +1058,7 @@ it for estimates/invoices/stock, and reuse the Smarty layer + `$_language` dicti
 | DB portability | **Pluggable persistence layer** (see §2.1) | The app must not hard-depend on MariaDB — keep a thin repository/ORM abstraction so PostgreSQL, MySQL, or another modern RDBMS can be swapped in. |
 | Backend | A typed, well-supported framework (e.g. **PHP 8.x/Laravel** to match existing stack, *or* TypeScript/NestJS, *or* Go) | Match team skills; keep fiscal logic in a small isolated module regardless. Laravel/Doctrine/Prisma all abstract the DB cleanly. |
 | Fiscalization service | **Isolated microservice** (own process, holds the cert) | Blast-radius isolation of the private key; independently testable against FURS test env. |
-| Queue/jobs | **Durable queue** (DB-backed table, or Redis/RabbitMQ) | EOR retry, **scheduled & recurring invoices** ([doc 09](#doc09)), e-invoice dispatch, forecasting jobs. |
+| Queue/jobs | **Durable queue — default: a transactional MariaDB table in the same DB as the ledger** (single durability domain). If Redis/RabbitMQ is preferred, it MUST be configured durable (AOF + replica / durable queues + persistent messages + publisher confirms) and covered by the same DR test. | EOR retry, **scheduled & recurring invoices** ([doc 09](#doc09)), e-invoice dispatch, forecasting jobs. |
 | Frontend | Server-rendered + progressive JS, mobile-first technician views | Counter speed + van use. |
 | Cache | Redis (optional) | Catalogue, stock levels. |
 | Object/WORM store | S3-compatible with **object-lock / immutability** | 10-year retention of PDFs/XML/fiscal payloads (doc 01 §8). |
@@ -921,7 +1073,10 @@ modern RDBMS (PostgreSQL, MySQL, etc.) can be substituted with config, not a rew
   Doctrine DBAL, or Prisma). No raw vendor-specific SQL in business code; vendor-specific bits
   live behind a `DatabaseDriver` interface.
 - **Stick to portable types & features:** `DECIMAL` for money (never float), `DATETIME`/UTC,
-  standard constraints/foreign keys, `JSON` columns (supported by MariaDB, MySQL, PostgreSQL).
+  standard constraints/foreign keys. `JSON` columns for snapshots — but note **MariaDB's `JSON`
+  is an alias for `LONGTEXT` + a `JSON_VALID` CHECK**, not a native binary JSON type like MySQL
+  5.7+/PostgreSQL `jsonb`; don't rely on JSON-path indexing parity — add **virtual/generated
+  columns + ordinary indexes** for any JSON fields that must be queried on MariaDB.
 - **Migrations are vendor-neutral** (framework migration files), with a per-driver hook for the
   few divergent pieces (see below).
 - **Where engines differ, abstract it:**
@@ -956,7 +1111,7 @@ modern RDBMS (PostgreSQL, MySQL, etc.) can be substituted with config, not a rew
   │ Fiscalization │ ───────────────►  FURS web service (TLS-mutual, XML/JSON)
   │  microservice │ ◄───────────────  EOR / errors
   └──────┬────────┘
-         │ durable queue (PENDING_EOR), worker drains, ≤48h SLA + alerting
+         │ durable queue (PENDING_EOR), worker drains, ≤2-working-day SLA + alerting
          ▼
    MariaDB (immutable ledger)  +  WORM archive (PDF/XML/payloads)
 ```
@@ -967,19 +1122,27 @@ invoices; the DB role enforces no-UPDATE/DELETE on ledger tables ([doc 03 §6]).
 ## 4. The FURS fiscalization microservice (the compliance heart) — [doc 01 §3]
 
 Responsibilities:
-1. **Hold the FURS digital certificate** (private key in a secrets manager / HSM-backed store;
-   never in app DB or repo). Rotate; alert ≥30 days before expiry.
-2. **Compute ZOI** locally: build the canonical string (tax no., issue datetime, invoice no.,
-   premises, device, total) → **RSA-SHA256 sign** → **MD5** → 32-hex.
+1. **Hold the FURS certificate's private key with sign-only custody**: preferably an
+   HSM/cloud-KMS where the key **never leaves the boundary** — the service calls the
+   HSM/KMS `sign()` API per invoice. If a software secrets manager (Vault) is used instead,
+   be explicit that key material is released into the service's memory at sign time — a
+   **weaker** custody model whose isolation claims must be scoped accordingly. Never in app
+   DB or repo. Rotate; alert ≥30 days before expiry.
+2. **Compute ZOI**: build the canonical string (tax no., issue datetime, invoice no.,
+   premises, device, total) → **RSA-SHA256 signature via the HSM/KMS call** → **MD5** →
+   32-hex.
 3. **Build & send** the verification message to FURS (SOAP/XML or JSON per current spec) over
    **mutually-authenticated TLS**, message signed with the cert; parse **EOR**.
 4. **Generate the QR/PDF417/Code128 payload** (ZOI+tax no.+timestamp+check digit).
 5. **Offline/ retry path:** if FURS unreachable, return ZOI-only, mark `PENDING_EOR`, enqueue;
-   a worker retries with backoff; **hard alert** as the 48h window approaches; record EOR &
-   reprint on success.
-6. **Idempotency:** keyed by (premises, device, number) — a crash-retry never double-submits or
+   a worker retries with backoff; **hard alert** as the **two-working-day** deadline
+   approaches (SI working-day calendar, [doc 01 §3.6]); record EOR & reprint on success.
+6. **High availability:** ZOI computation is synchronous on the invoice-finalize critical
+   path — run **≥2 redundant instances** of this service behind a load balancer; an outage of
+   the *service* (not just FURS) must never stop cash-invoice issuance.
+7. **Idempotency:** keyed by (premises, device, number) — a crash-retry never double-submits or
    re-numbers.
-7. **Test mode:** point at the **FURS test endpoint** with test certs for CI/e2e.
+8. **Test mode:** point at the **FURS test endpoint** with test certs for CI/e2e.
 
 > Keep this service tiny, heavily tested, and version-pinned to the **current FURS technical
 > documentation** (re-check on each FURS release; the spec is versioned, currently ≈ v3.1).
@@ -988,6 +1151,10 @@ Responsibilities:
 
 - An **invoice-rendering layer** turns the internal invoice object into:
   PDF, fiscal payload, **e-SLOG 2.0 XML** (with SI national extensions), **EN 16931** UBL/CII.
+- The exporter maps `Invoice.type`/`sign` to the correct **document-type code** — `380`
+  (commercial invoice), `381` (credit note), `386` (prepayment/advance invoice) — never
+  emitting credit notes or advances as plain invoices. Validated against the EN 16931
+  schematron per type.
 - **B2G:** deliver e-SLOG via **UJP** today (when invoicing public bodies).
 - **B2B:** build the exporter now; the **2028 mandate** becomes a feature flag + a delivery
   channel (access point / the SI exchange route as finalized in the ZEPDESED implementing
@@ -1017,7 +1184,7 @@ Responsibilities:
 - **CI/CD:** automated tests incl. a **fiscalization contract test** against FURS test certs;
   schema migrations reviewed; no secrets in repo.
 - **Observability:** structured logs (PII-redacted), metrics on EOR latency & PENDING_EOR
-  backlog, alerts on the 48h SLA, cert expiry, queue depth, failed VIES, period-close status.
+  backlog, alerts on the two-working-day SLA, cert expiry, queue depth, failed VIES, period-close status.
 - **Backups & DR:** point-in-time recovery (MariaDB binlog + `mariabackup`), immutable archive replication, tested restores —
   see [doc 05 §backups].
 
@@ -1072,8 +1239,11 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 - Per-user **multiple credentials** (a key per device + a backup key) to avoid lock-out;
   enforce **at least one backup** at enrolment.
 - Store only **public keys + credential metadata** (credential id, AAGUID, sign-count, created/
-  last-used). Verify **sign-count** to detect cloned authenticators. Bind to the correct
-  **RP ID / origin** to stop phishing.
+  last-used). Treat **sign-count as a best-effort signal for device-bound authenticators only**
+  (hardware keys): synced passkeys (iCloud Keychain, Google Password Manager) report a constant
+  0 **by design**, so never alarm or block on a non-incrementing counter. Clone/abuse detection
+  relies primarily on **origin binding (RP ID)**, attestation for high-privilege enrolments,
+  and anomaly signals (new device + new IP, impossible travel).
 - **Account recovery** is the dangerous part: recovery requires admin approval + a second
   verified factor + full audit; never a simple "email me a reset link" for privileged roles.
 
@@ -1138,8 +1308,10 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 
 - **Append-only `AuditEvent`** ([doc 03 §11]) for every create/modify/view-sensitive/export/
   auth event: actor, action, entity, before/after (PII redacted), IP, device, request id, time.
-- **Immutable fiscal ledger** with optional **hash-chaining** ([doc 03 §6]) → silent
-  back-dating or row insertion is detectable.
+- **Immutable fiscal ledger** with **required hash-chaining + external anchoring** ([doc 03
+  §6]): the chain head is checkpointed to the WORM archive (optionally RFC 3161-timestamped)
+  and a scheduled job re-verifies — that anchor is what makes tampering by a privileged DB
+  user detectable; the in-DB chain alone only catches accidental/unprivileged changes.
 - Logs shipped to **write-once / restricted storage**; admins **cannot edit or delete** audit
   records. Retain audit logs in line with tax (10y) and security needs; review periodically.
 - **Alerting** on anomalies: mass exports, off-hours admin actions, repeated MFA failures,
@@ -1192,8 +1364,11 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 
 ### 5.6 Breach response (Art. 33/34)
 - Documented **incident-response plan**: detect → contain → assess → **notify IP-RS within 72
-  hours** of becoming aware (if risk to individuals) → notify affected individuals if high
-  risk → post-mortem. Keep a breach register. Run tabletop drills.
+  hours** of becoming aware — notification is the **default**, skippable only where the breach
+  is *unlikely to result in a risk* to individuals (a narrow exception the controller must be
+  able to justify, Art. 33) → notify affected individuals directly where the breach likely
+  results in a **high** risk (Art. 34, a higher bar) → post-mortem. Keep a breach register.
+  Run tabletop drills.
 
 ### 5.7 Privacy & security by design (Art. 25/32)
 - Pseudonymise/encrypt PII, default to least exposure, build the above controls in from day one
@@ -1247,6 +1422,11 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
   scoped data only.
 - Staff **onboarding/offboarding** checklist: provision least-privilege, **revoke on
   departure** (sessions, keys, secrets), security-awareness training.
+- **Operator PII after departure (tiered retention, §5.3 applied to staff):** the legally
+  required copy of a fiscal operator's tax number lives **immutably inside each FiscalRecord
+  snapshot** (10-year retention) — so on offboarding the live `User` row is deactivated and
+  its `tax_number`, TOTP secret and contact fields are **erased/pseudonymised**; historical
+  fiscal records remain intact and attributable without keeping live staff PII around.
 
 ---
 
@@ -1291,7 +1471,7 @@ size and the build-vs-buy decision ([doc 04 §9]).
 **Goal: issue a 100 %-legal, fiscally-verified invoice from a ticket.**
 - Company/premises/device/rate config; user accounts with **tax numbers** + **passkeys/MFA**.
 - Invoice object + Art. 82/83 **validation gate**; gapless **numbering** inside finalize txn.
-- **Fiscalization service:** ZOI → EOR, QR/PDF417, **offline PENDING_EOR queue + 48h SLA**
+- **Fiscalization service:** ZOI → EOR, QR/PDF417, **offline PENDING_EOR queue + two-working-day SLA**
   ([doc 01 §3], [doc 04 §4]).
 - Payments (cash/card/transfer) deciding fiscalization; PDF + thermal receipt (reuse Smarty
   `printticket.tpl` styling + `$_language`).
@@ -1318,7 +1498,7 @@ size and the build-vs-buy decision ([doc 04 §9]).
 - **Posting-rule engine** + chart-of-accounts mapping; **journal export** to accountant
   ([doc 07]).
 - Inventory valuation/NRV, COGS, receivables/payables ageing, doubtful-debt allowance.
-- **DDV-O / PD-O** exports in eDavki-expected formats; period lock/close; AJPES annual-report
+- **DDV-O** + **VAT-ledger XML** exports in the eDavki schemas (mandatory since 1 Jul 2025); Art. 76.a (PD-O) capability; period lock/close; AJPES annual-report
   figures.
 - Management dashboards (margin, utilization, turnaround, stock turnover).
 
@@ -1341,7 +1521,7 @@ size and the build-vs-buy decision ([doc 04 §9]).
 
 ## MVP cut (if you must ship the minimum legal thing first)
 **Phase 0 + Phase 1 only**: configured company/premises/devices, passkey/MFA login, ticket →
-validated invoice → **ZOI/EOR/QR** with the 48h offline fallback, credit notes, immutable
+validated invoice → **ZOI/EOR/QR** with the two-working-day offline fallback, credit notes, immutable
 ledger + 10-year archive, basic VAT book. That is the smallest system that lets kron.si
 **legally take money for a repair**. Everything else optimises operations on top of a compliant
 core.
@@ -1356,8 +1536,8 @@ core.
 | Risk | Mitigation |
 |------|-----------|
 | FURS spec changes / cert expiry | Version-pinned isolated service; expiry alerts; test env in CI. |
-| Numbering gaps under crash | Atomic allocation in finalize txn; recovery reconciliation; documented guarantee. |
-| 48h EOR window missed in an outage | Durable DB-backed queue, drained on recovery, SLA alerting. |
+| Crash during finalize (print/EOR failures, double-submit) | Number allocation commits atomically with the invoice (rollback = counter also rolls back → structurally gapless); idempotent finalize + resend/reprint on recovery. |
+| Two-working-day EOR window missed in an outage | Durable DB-backed queue, drained on recovery, SLA alerting. |
 | Wrong VAT treatment (rates/reverse charge/margin) | Rates & rules as validity-dated config; accountant sign-off; VIES at source. |
 | Tax retention vs GDPR erasure conflict | Tiered/field-level retention; statutory data preserved, rest erasable ([doc 05 §5.3]). |
 | Build effort underestimated | Consider buying fiscalization/e-SLOG; phase ruthlessly; MVP first. |
@@ -1561,9 +1741,9 @@ background**, with thin light borders and gentle shadows.
 - **Ambient background:** a quiet gradient / mesh with a few blurred color "blobs" that the
   glass refracts; **static or very slow** (respects reduced-motion).
 - **Performance budget:** blur is GPU-expensive — cap the number of simultaneously blurred
-  layers, fall back to solid translucent fills on low-power devices and when
-  `prefers-reduced-transparency` is set, and never blur large scrolling tables (blur the
-  *frame*, not the rows).
+  layers, fall back to solid translucent fills on low-power devices, and never blur large
+  scrolling tables (blur the *frame*, not the rows). Reduced-transparency handling: see §3/§9
+  — the in-app toggle is the primary mechanism, not the media query.
 
 > **Guard rail:** glass is for **chrome and containers** (nav, cards, toolbars, modals,
 > sidebars), not for dense data rows or printable documents. Invoices print on solid white
@@ -1596,7 +1776,11 @@ Themes are just **different Tier-2 mappings**:
 - **Switching:** `auto` (follows OS `prefers-color-scheme`), `light`, `dark` — per-user
   preference, persisted; instant, no reload (CSS variables on `:root[data-theme]`).
 - **High-contrast theme** variant for accessibility, and a **"reduced transparency"** variant
-  that swaps glass for solid surfaces (auto-enabled on `prefers-reduced-transparency`).
+  that swaps glass for solid surfaces. **Primary control: an explicit toggle in user settings**
+  (§10) — `prefers-reduced-transparency` is honoured as progressive enhancement where
+  supported, but it currently works **only in Chromium browsers** (Safari doesn't implement
+  it at all — including on Apple's own platforms — and Firefox ships it disabled), so the
+  media query alone would strand most users who need the accommodation.
 - Implementation: **CSS custom properties**; no theme logic baked into components. Works with
   Tailwind (CSS-var-backed theme), vanilla CSS, or any framework.
 
@@ -1610,8 +1794,12 @@ Themes are just **different Tier-2 mappings**:
   in both themes: **success** (paid, verified), **warning** (PENDING_EOR, low stock, approaching
   Intrastat threshold), **danger** (overdue, failed fiscalization, errors), **info**, **neutral**.
 - **Domain status palette** (consistent everywhere — tickets, invoices, stock): e.g. Ticket
-  *Odprt / V delu / Čaka dele / Končan*, Invoice *Osnutek / Izdan / Potrjen (EOR) / Čaka EOR /
-  Stornirano*, each a labelled **pill/badge** with icon + color (never color alone — §9).
+  *Odprt / V delu / Čaka na dele / Končan*; Invoice pills combine the document status
+  ([doc 03 §5]: *Osnutek / Izdan / Popravljen*) with the fiscal state (*Čaka na EOR / Potrjen
+  (EOR)*). There is **no "Stornirano" state on an original invoice** — a storno is a separate
+  linked credit note ([doc 01 §6]); the original shows *Popravljen* with a link to its
+  dobropis. Each state is a labelled **pill/badge** with icon + color (never color alone —
+  §9).
 
 ---
 
@@ -1662,7 +1850,7 @@ theme-aware, i18n-aware, accessible, and has loading/empty/error states.
   [doc 09](#doc09)).
 - **Feedback & system:** Confirmation dialogs with **step-up auth** prompt ([doc 05 §1.2]) for
   finalize/refund, inline validation, global error boundary, offline/connectivity banner
-  (matters for the 48h FURS window).
+  (matters for the two-working-day FURS window).
 
 ### 7.1 Key screens
 Dashboard (KPIs + today's tickets + alerts) · Tickets board & detail · **Invoice editor &
@@ -1705,14 +1893,17 @@ Auth/passkey management ([doc 05]).
   -secondary`) guaranteed ≥ **4.5:1** against the *effective* (post-blur) surface; where blur
   can't guarantee it, add a subtle **scrim** behind text. Automated contrast tests in CI.
 - **Respect user prefs:** `prefers-reduced-motion` (kill parallax/blur animation),
-  `prefers-reduced-transparency` (solid surfaces), `prefers-contrast` (high-contrast theme),
-  forced-colors/Windows high-contrast.
+  `prefers-contrast` (high-contrast theme), forced-colors/Windows high-contrast;
+  `prefers-reduced-transparency` where supported (Chromium-only today — the settings toggle
+  in §10 is the reliable path, §3).
 - **Never color-only:** status uses icon + label + color.
 - **Keyboard & focus:** full keyboard nav, visible `--focus-ring`, logical order, focus trap in
   modals, skip links, ⌘K palette is keyboard-first.
 - **Screen readers:** semantic HTML + ARIA, labelled inputs, live regions for toasts/validation,
   table semantics; localised `aria-label`s (tie into §8).
-- **Targets:** ≥ 44×44px touch targets (technician mobile use).
+- **Targets:** WCAG 2.2 AA requires ≥ **24×24 px** (SC 2.5.8, with spacing exception) —
+  that's the conformance floor; we **aim for ≥ 44×44 px** on primary controls and all
+  technician-mobile touch targets (AAA / Apple HIG guidance, deliberately above AA).
 
 ---
 
@@ -1776,7 +1967,7 @@ The on-screen glass UI and the **printed document are deliberately different ren
 ---
 
 ## 13. UI/UX acceptance checklist
-- [ ] Dark, light & auto themes; high-contrast & reduced-transparency variants; instant switch.
+- [ ] Dark, light & auto themes; high-contrast & reduced-transparency variants (settings toggle primary; media query progressive); instant switch.
 - [ ] Glass used only for chrome/containers; data rows & documents stay crisp/solid.
 - [ ] Two-tier design tokens; zero hard-coded colors in components.
 - [ ] Full component kit with loading/empty/error + all states, theme- & i18n-aware.
@@ -1784,7 +1975,7 @@ The on-screen glass UI and the **printed document are deliberately different ren
 - [ ] Per-locale master-data & document text; **localised invoice printouts** (per-document language).
 - [ ] WCAG 2.2 AA: contrast-on-glass enforced, reduced-motion/transparency respected, keyboard + SR.
 - [ ] Backend-configurable branding, themes, statuses, document templates, languages, legends.
-- [ ] Mobile/technician layouts (≥44px targets); density toggle for data screens.
+- [ ] Mobile/technician layouts (24px AA floor, 44px goal on primary/touch controls); density toggle for data screens.
 - [ ] Print/PDF render target separate from UI; PDF/A-ready; ZOI/EOR/QR on fiscal docs.
 
 
@@ -1793,7 +1984,7 @@ The on-screen glass UI and the **printed document are deliberately different ren
 
 <a id="doc09"></a>
 
-# 09 — Scheduled, Recurring & Collective Invoices (zbirni/skupni račun)
+# 09 — Scheduled, Recurring & Collective Invoices (zbirni račun)
 
 Three related-but-distinct capabilities the business asked for, plus their **Slovenian legal
 basis** and how they interact with **fiscal verification** ([doc 01 §3]). As ever: engineering
@@ -1803,7 +1994,7 @@ interpretation — **confirm with the accountant.**
 |------------|-----------|---------|
 | **Scheduled invoice** | A drafted invoice issued automatically at a chosen future date/time. | *načrtovani / odloženi račun* |
 | **Recurring invoice** | A template that auto-generates invoices on a repeating schedule (e.g. monthly maintenance contract). | *ponavljajoči se račun* |
-| **Collective invoice** | One invoice consolidating **many supplies/tickets** over a period into multiple lines. | **zbirni / skupni račun** |
+| **Collective invoice** | One invoice consolidating **many supplies/tickets** over a period into multiple lines. | **zbirni račun** |
 
 These overlap: a common case is a **recurring + collective** monthly invoice — "on the 1st of
 each month, bill customer X for all repairs completed last month as one multi-line invoice."
@@ -1812,7 +2003,8 @@ each month, bill customer X for all repairs completed last month as one multi-li
 
 ## 1. Legal basis & constraints (ZDDV-1)
 
-- **Collective invoice (skupni/zbirni račun)** is explicitly allowed: a taxable person who makes
+- **Collective invoice (zbirni račun; ZDDV-1 Art. 81 commentary also uses *skupni račun* — we
+  standardise on *zbirni račun*)** is explicitly allowed: a taxable person who makes
   **several separate supplies** of goods/services may issue **one invoice covering them**,
   **provided the VAT on all the listed supplies becomes chargeable within the same tax period**
   (the tax period in SI is typically the **calendar month**). → *A collective invoice must not
@@ -1831,7 +2023,7 @@ each month, bill customer X for all repairs completed last month as one multi-li
   **at the moment it is actually finalized/issued** (not when scheduled).
 
 ### 1.1 Fiscal verification implications ⭐ (critical)
-- **The 48h / ZOI-EOR machinery is unchanged** ([doc 01 §3]). A scheduled invoice is only
+- **The two-working-day / ZOI-EOR machinery is unchanged** ([doc 01 §3]). A scheduled invoice is only
   **fiscalized at the instant it is finalized**, using **that moment's** timestamp for the ZOI,
   and obtains its EOR then.
 - **Cash + scheduling is a contradiction** for fiscal law (cash invoices are verified at the
@@ -1841,7 +2033,7 @@ each month, bill customer X for all repairs completed last month as one multi-li
   it stays a *draft* and is only fiscalized when the cash is actually taken). Make this a
   hard rule, configurable but defaulting to "scheduled ⇒ non-cash".
 - A scheduled invoice that **does** require fiscalization (configured edge case) goes through
-  the normal real-time → PENDING_EOR path at finalize time, with the same 48h guarantee.
+  the normal real-time → PENDING_EOR path at finalize time, with the same two-working-day guarantee.
 
 ---
 
@@ -1870,7 +2062,7 @@ each month, bill customer X for all repairs completed last month as one multi-li
 - Use cases for a repair business: **maintenance/SLA contracts**, managed-device fleets,
   retainer customers, periodic consumables.
 
-### 2.3 Collective invoice (zbirni / skupni račun)
+### 2.3 Collective invoice (zbirni račun)
 - **Aggregates many source items** — completed tickets / deliveries / consumed parts / labour
   for **one customer within one VAT period** — into a **single multi-line invoice**.
 - Two ways to build it:
@@ -1880,8 +2072,11 @@ each month, bill customer X for all repairs completed last month as one multi-li
      all uninvoiced items for the customer into one invoice.
 - **Line grouping options (configurable):** one line per ticket, per part+labour, per day, or
   fully itemised; each line keeps a **back-reference** to its source ticket/movement
-  ([doc 03 §5]) for traceability and so an item can't be **double-invoiced** (mark source
-  `invoiced` atomically at finalize).
+  ([doc 03 §5]) for traceability and so an item can't be **double-invoiced** (source billing
+  status `uninvoiced` → `invoiced`, atomic at finalize). **Disputed line → credit note:** a
+  credit-note line references the specific `source_ref`s it corrects (not just the collective
+  invoice as a whole), flipping those items to **`credited`** — re-billing a credited item is
+  a deliberate, audited action, never an automatic re-sweep.
 - **VAT-period guard:** the builder only offers items whose chargeability is in the **same tax
   period** and **blocks** mixing periods (§1).
 - **Per-rate subtotals:** with many lines across rates, the document shows correct **per-VAT-
@@ -1942,12 +2137,13 @@ each month, bill customer X for all repairs completed last month as one multi-li
 - [ ] Collective invoice enforces **single VAT period**; per-rate subtotals correct.
 - [ ] Source items back-referenced and **cannot be double-invoiced** (atomic mark at finalize).
 - [ ] Scheduled/recurring default to **non-cash**; cash-scheduling blocked unless explicitly configured.
-- [ ] Fiscalization (if applicable) happens **at finalize time** with that timestamp's ZOI/EOR + 48h fallback.
+- [ ] Fiscalization (if applicable) happens **at finalize time** with that timestamp's ZOI/EOR + two-working-day fallback.
 - [ ] Numbering allocated at issue, gapless ([doc 03 §6]); scheduled drafts hold **no** number.
 - [ ] Durable, idempotent, crash-safe scheduler; Europe/Ljubljana schedules; audit + failure alerts.
 - [ ] Recurring profiles: pause/skip/end, edit affects future only, optional period sweep (recurring+collective).
 - [ ] Validation gate blocks auto-issue of a non-compliant invoice (alerts instead).
 - [ ] Fully backend-configurable (grouping, language, cut-off, retries, auto-send templates per locale).
+- [ ] e-SLOG/EN 16931 export uses the correct document-type code per document (380 invoice / 381 credit note / 386 advance), [doc 04 §5].
 
 ## Sources
 - ZDDV-1, 81. člen (obveznost in rok izdaje računov / collective & periodic invoices): https://www.racunovodstvo.net/zakonodaja/zddv/81-clen
@@ -2039,12 +2235,62 @@ ServiceApp (Kayako, MariaDB)                      servmod ERP
   tickets. Prefer a **read-only** coupling to ServiceApp's DB to avoid corrupting it.
 - **Idempotency & no double-billing:** each Kayako ticket/time-track row carries a
   `billed_invoice_id` mapping in the ERP; a ticket can't be invoiced twice ([doc 09 §2.3] same
-  guard). Re-opened/edited tickets reconcile via the source ref.
+  guard, with the `uninvoiced → invoiced → credited` status semantics).
+- **Edited-after-billing detection (concrete mechanism):** the bridge's mapping table mirrors a
+  `content_hash` + `updated_at` for every billed source row. A hash/timestamp change on an
+  **already-billed** `swtickettimetracks` row (hours corrected after invoicing) raises a
+  **"billed-then-edited" alert** requiring a manual credit note or supplemental invoice — never
+  a silent re-sync. New time logged on a **reopened, already-invoiced ticket** automatically
+  becomes a fresh uninvoiced BillableItem ([doc 09 §3]) — it is never merged into the old
+  invoice.
 - **Collective billing:** because Kayako time-tracks accumulate per ticket, the **collective
   invoice (zbirni račun, [doc 09])** is the natural monthly B2B document — sweep all billable
   tickets for a customer in the VAT period into one invoice.
 - **Write-back:** push the resulting **invoice number + EOR + PDF link** back onto the Kayako
   ticket (a custom field/post) so staff see billing status where they already work.
+
+## 3.2 Bidirectional coverage matrix — is *all* functionality to and from ServiceApp handled?
+
+Every data flow between the two systems, direction by direction, with its mechanism and
+status. ✅ = designed in this plan; 🔶 = designed but **needs the dump/skill to finalise field
+mapping**; ⬜ = deliberately out of scope for the bridge (stays in one system).
+
+**ServiceApp → ERP (reads):**
+
+| Flow | Mechanism | Status |
+|------|-----------|--------|
+| Billable labour (time tracks) | read-only connector on `swtickettimetracks`; hash-mirrored | 🔶 field names from dump |
+| Parts/fees charged on ticket | custom fields / bolt-on charges table → typed lines | 🔶 depends on customisation |
+| Customers & organisations | match-or-create, dedupe by email/VAT ID, VIES check | 🔶 where VAT ID lives |
+| Devices (model, IMEI/serial) | custom-field mapping → Device entity | 🔶 custom-field defs |
+| Staff (technicians/operators) | `swstaff` → User; **tax numbers added in ERP** (not in Kayako) | ✅ |
+| Ticket status transitions ("billable/closed") | event/poll trigger for the billing sweep | ✅ |
+| Attachments (device photos) | referenced (not copied) unless migrating | ✅ |
+| Reopened tickets / edited-after-billing rows | hash+timestamp guard (§3.1) | ✅ |
+| Historical invoices (pre-ERP) | one-time import, read-only archival, **never re-fiscalized** | ✅ (§4) |
+
+**ERP → ServiceApp (write-backs):**
+
+| Flow | Mechanism | Status |
+|------|-----------|--------|
+| Invoice number + EOR + PDF link onto ticket | single custom field/post write (the **only** write the bridge makes) | ✅ |
+| Billing status (uninvoiced/invoiced/credited) | same write-back channel | ✅ |
+| Credit-note events (line credited → ticket flagged) | write-back note + status | ✅ |
+| Estimate/approval links (if portal used) | posted as ticket note/URL | ✅ |
+| Stock / parts availability into Kayako UI | ⬜ **not** written back — technicians use the ERP mobile view ([doc 02 §5.2]); mirroring stock into Kayako would create a second source of truth | ⬜ by design |
+| Prices/catalogue into Kayako custom fields | ⬜ same reason — pricing resolves in the ERP at billing time ([doc 02 §3.6]) | ⬜ by design |
+
+**Conflict & sync rules:** ServiceApp remains the **source of truth for ticket narrative**;
+the ERP is the **source of truth for money, stock and fiscal documents**. The bridge is
+**read-mostly** (one write-back channel), idempotent per source row, audited, and any
+same-row conflict resolves in favour of the fiscal ledger (immutable) with an alert — never a
+silent overwrite in either direction.
+
+> **To close the 🔶 rows** I need the artefacts on your Mac — none are readable from this
+> cloud session: `~/.claude/skills/serviceapp-complete/SKILL.md`,
+> `/Users/urosvogrinec/servis/azet02_kayako.md`, and `SERVICEAPP_REFERENCE.md`. Commit them
+> into this repo (suggested: `docs/reference/` + `.claude/skills/serviceapp-complete/`),
+> paste them into chat, or teleport the session to your desktop (`claude --teleport`).
 
 ## 4. One-time historical migration
 
@@ -2172,7 +2418,7 @@ backlog**, not all of it ships at once.
     "which model is trending in for screen repairs?" over the ERP data, **read-mostly**, with
     RBAC ([doc 05 §2]) — never bypassing the fiscal/ledger guarantees.
 24. **Offline-first technician PWA** — bench/van app that works without signal, queues stock
-    moves & labour, syncs later — pairs with the **48h FURS offline path** ([doc 01 §3.6]).
+    moves & labour, syncs later — pairs with the **two-working-day FURS offline path** ([doc 01 §3.6]).
 
 ## F. Platform & ecosystem
 25. **Open API + webhooks** — let ServiceApp ([doc 10]), the accountant's software ([doc 07
@@ -2196,7 +2442,7 @@ backlog**, not all of it ships at once.
 | **Delight / advanced** | later | 3, 6, 9, 13, 18, 19, 21, 23, 24, 27, 28 |
 
 > **Guard rail:** none of these may weaken the non-negotiables — gapless numbering, immutable
-> fiscal ledger, real-time/48h FURS verification, VAT correctness, 10-year retention, and
+> fiscal ledger, real-time/two-working-day FURS verification, VAT correctness, 10-year retention, and
 > GDPR. Innovation lives **on top of** the compliant core, never around it.
 
 

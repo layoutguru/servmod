@@ -76,12 +76,62 @@ ServiceApp (Kayako, MariaDB)                      servmod ERP
   tickets. Prefer a **read-only** coupling to ServiceApp's DB to avoid corrupting it.
 - **Idempotency & no double-billing:** each Kayako ticket/time-track row carries a
   `billed_invoice_id` mapping in the ERP; a ticket can't be invoiced twice ([doc 09 §2.3] same
-  guard). Re-opened/edited tickets reconcile via the source ref.
+  guard, with the `uninvoiced → invoiced → credited` status semantics).
+- **Edited-after-billing detection (concrete mechanism):** the bridge's mapping table mirrors a
+  `content_hash` + `updated_at` for every billed source row. A hash/timestamp change on an
+  **already-billed** `swtickettimetracks` row (hours corrected after invoicing) raises a
+  **"billed-then-edited" alert** requiring a manual credit note or supplemental invoice — never
+  a silent re-sync. New time logged on a **reopened, already-invoiced ticket** automatically
+  becomes a fresh uninvoiced BillableItem ([doc 09 §3]) — it is never merged into the old
+  invoice.
 - **Collective billing:** because Kayako time-tracks accumulate per ticket, the **collective
   invoice (zbirni račun, [doc 09])** is the natural monthly B2B document — sweep all billable
   tickets for a customer in the VAT period into one invoice.
 - **Write-back:** push the resulting **invoice number + EOR + PDF link** back onto the Kayako
   ticket (a custom field/post) so staff see billing status where they already work.
+
+## 3.2 Bidirectional coverage matrix — is *all* functionality to and from ServiceApp handled?
+
+Every data flow between the two systems, direction by direction, with its mechanism and
+status. ✅ = designed in this plan; 🔶 = designed but **needs the dump/skill to finalise field
+mapping**; ⬜ = deliberately out of scope for the bridge (stays in one system).
+
+**ServiceApp → ERP (reads):**
+
+| Flow | Mechanism | Status |
+|------|-----------|--------|
+| Billable labour (time tracks) | read-only connector on `swtickettimetracks`; hash-mirrored | 🔶 field names from dump |
+| Parts/fees charged on ticket | custom fields / bolt-on charges table → typed lines | 🔶 depends on customisation |
+| Customers & organisations | match-or-create, dedupe by email/VAT ID, VIES check | 🔶 where VAT ID lives |
+| Devices (model, IMEI/serial) | custom-field mapping → Device entity | 🔶 custom-field defs |
+| Staff (technicians/operators) | `swstaff` → User; **tax numbers added in ERP** (not in Kayako) | ✅ |
+| Ticket status transitions ("billable/closed") | event/poll trigger for the billing sweep | ✅ |
+| Attachments (device photos) | referenced (not copied) unless migrating | ✅ |
+| Reopened tickets / edited-after-billing rows | hash+timestamp guard (§3.1) | ✅ |
+| Historical invoices (pre-ERP) | one-time import, read-only archival, **never re-fiscalized** | ✅ (§4) |
+
+**ERP → ServiceApp (write-backs):**
+
+| Flow | Mechanism | Status |
+|------|-----------|--------|
+| Invoice number + EOR + PDF link onto ticket | single custom field/post write (the **only** write the bridge makes) | ✅ |
+| Billing status (uninvoiced/invoiced/credited) | same write-back channel | ✅ |
+| Credit-note events (line credited → ticket flagged) | write-back note + status | ✅ |
+| Estimate/approval links (if portal used) | posted as ticket note/URL | ✅ |
+| Stock / parts availability into Kayako UI | ⬜ **not** written back — technicians use the ERP mobile view ([doc 02 §5.2]); mirroring stock into Kayako would create a second source of truth | ⬜ by design |
+| Prices/catalogue into Kayako custom fields | ⬜ same reason — pricing resolves in the ERP at billing time ([doc 02 §3.6]) | ⬜ by design |
+
+**Conflict & sync rules:** ServiceApp remains the **source of truth for ticket narrative**;
+the ERP is the **source of truth for money, stock and fiscal documents**. The bridge is
+**read-mostly** (one write-back channel), idempotent per source row, audited, and any
+same-row conflict resolves in favour of the fiscal ledger (immutable) with an alert — never a
+silent overwrite in either direction.
+
+> **To close the 🔶 rows** I need the artefacts on your Mac — none are readable from this
+> cloud session: `~/.claude/skills/serviceapp-complete/SKILL.md`,
+> `/Users/urosvogrinec/servis/azet02_kayako.md`, and `SERVICEAPP_REFERENCE.md`. Commit them
+> into this repo (suggested: `docs/reference/` + `.claude/skills/serviceapp-complete/`),
+> paste them into chat, or teleport the session to your desktop (`claude --teleport`).
 
 ## 4. One-time historical migration
 

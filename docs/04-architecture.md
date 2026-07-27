@@ -24,7 +24,7 @@ it for estimates/invoices/stock, and reuse the Smarty layer + `$_language` dicti
 | DB portability | **Pluggable persistence layer** (see §2.1) | The app must not hard-depend on MariaDB — keep a thin repository/ORM abstraction so PostgreSQL, MySQL, or another modern RDBMS can be swapped in. |
 | Backend | A typed, well-supported framework (e.g. **PHP 8.x/Laravel** to match existing stack, *or* TypeScript/NestJS, *or* Go) | Match team skills; keep fiscal logic in a small isolated module regardless. Laravel/Doctrine/Prisma all abstract the DB cleanly. |
 | Fiscalization service | **Isolated microservice** (own process, holds the cert) | Blast-radius isolation of the private key; independently testable against FURS test env. |
-| Queue/jobs | **Durable queue** (DB-backed table, or Redis/RabbitMQ) | EOR retry, **scheduled & recurring invoices** ([doc 09](09-scheduled-collective-invoicing.md)), e-invoice dispatch, forecasting jobs. |
+| Queue/jobs | **Durable queue — default: a transactional MariaDB table in the same DB as the ledger** (single durability domain). If Redis/RabbitMQ is preferred, it MUST be configured durable (AOF + replica / durable queues + persistent messages + publisher confirms) and covered by the same DR test. | EOR retry, **scheduled & recurring invoices** ([doc 09](09-scheduled-collective-invoicing.md)), e-invoice dispatch, forecasting jobs. |
 | Frontend | Server-rendered + progressive JS, mobile-first technician views | Counter speed + van use. |
 | Cache | Redis (optional) | Catalogue, stock levels. |
 | Object/WORM store | S3-compatible with **object-lock / immutability** | 10-year retention of PDFs/XML/fiscal payloads (doc 01 §8). |
@@ -39,7 +39,10 @@ modern RDBMS (PostgreSQL, MySQL, etc.) can be substituted with config, not a rew
   Doctrine DBAL, or Prisma). No raw vendor-specific SQL in business code; vendor-specific bits
   live behind a `DatabaseDriver` interface.
 - **Stick to portable types & features:** `DECIMAL` for money (never float), `DATETIME`/UTC,
-  standard constraints/foreign keys, `JSON` columns (supported by MariaDB, MySQL, PostgreSQL).
+  standard constraints/foreign keys. `JSON` columns for snapshots — but note **MariaDB's `JSON`
+  is an alias for `LONGTEXT` + a `JSON_VALID` CHECK**, not a native binary JSON type like MySQL
+  5.7+/PostgreSQL `jsonb`; don't rely on JSON-path indexing parity — add **virtual/generated
+  columns + ordinary indexes** for any JSON fields that must be queried on MariaDB.
 - **Migrations are vendor-neutral** (framework migration files), with a per-driver hook for the
   few divergent pieces (see below).
 - **Where engines differ, abstract it:**
@@ -74,7 +77,7 @@ modern RDBMS (PostgreSQL, MySQL, etc.) can be substituted with config, not a rew
   │ Fiscalization │ ───────────────►  FURS web service (TLS-mutual, XML/JSON)
   │  microservice │ ◄───────────────  EOR / errors
   └──────┬────────┘
-         │ durable queue (PENDING_EOR), worker drains, ≤48h SLA + alerting
+         │ durable queue (PENDING_EOR), worker drains, ≤2-working-day SLA + alerting
          ▼
    MariaDB (immutable ledger)  +  WORM archive (PDF/XML/payloads)
 ```
@@ -85,19 +88,27 @@ invoices; the DB role enforces no-UPDATE/DELETE on ledger tables ([doc 03 §6]).
 ## 4. The FURS fiscalization microservice (the compliance heart) — [doc 01 §3]
 
 Responsibilities:
-1. **Hold the FURS digital certificate** (private key in a secrets manager / HSM-backed store;
-   never in app DB or repo). Rotate; alert ≥30 days before expiry.
-2. **Compute ZOI** locally: build the canonical string (tax no., issue datetime, invoice no.,
-   premises, device, total) → **RSA-SHA256 sign** → **MD5** → 32-hex.
+1. **Hold the FURS certificate's private key with sign-only custody**: preferably an
+   HSM/cloud-KMS where the key **never leaves the boundary** — the service calls the
+   HSM/KMS `sign()` API per invoice. If a software secrets manager (Vault) is used instead,
+   be explicit that key material is released into the service's memory at sign time — a
+   **weaker** custody model whose isolation claims must be scoped accordingly. Never in app
+   DB or repo. Rotate; alert ≥30 days before expiry.
+2. **Compute ZOI**: build the canonical string (tax no., issue datetime, invoice no.,
+   premises, device, total) → **RSA-SHA256 signature via the HSM/KMS call** → **MD5** →
+   32-hex.
 3. **Build & send** the verification message to FURS (SOAP/XML or JSON per current spec) over
    **mutually-authenticated TLS**, message signed with the cert; parse **EOR**.
 4. **Generate the QR/PDF417/Code128 payload** (ZOI+tax no.+timestamp+check digit).
 5. **Offline/ retry path:** if FURS unreachable, return ZOI-only, mark `PENDING_EOR`, enqueue;
-   a worker retries with backoff; **hard alert** as the 48h window approaches; record EOR &
-   reprint on success.
-6. **Idempotency:** keyed by (premises, device, number) — a crash-retry never double-submits or
+   a worker retries with backoff; **hard alert** as the **two-working-day** deadline
+   approaches (SI working-day calendar, [doc 01 §3.6]); record EOR & reprint on success.
+6. **High availability:** ZOI computation is synchronous on the invoice-finalize critical
+   path — run **≥2 redundant instances** of this service behind a load balancer; an outage of
+   the *service* (not just FURS) must never stop cash-invoice issuance.
+7. **Idempotency:** keyed by (premises, device, number) — a crash-retry never double-submits or
    re-numbers.
-7. **Test mode:** point at the **FURS test endpoint** with test certs for CI/e2e.
+8. **Test mode:** point at the **FURS test endpoint** with test certs for CI/e2e.
 
 > Keep this service tiny, heavily tested, and version-pinned to the **current FURS technical
 > documentation** (re-check on each FURS release; the spec is versioned, currently ≈ v3.1).
@@ -106,6 +117,10 @@ Responsibilities:
 
 - An **invoice-rendering layer** turns the internal invoice object into:
   PDF, fiscal payload, **e-SLOG 2.0 XML** (with SI national extensions), **EN 16931** UBL/CII.
+- The exporter maps `Invoice.type`/`sign` to the correct **document-type code** — `380`
+  (commercial invoice), `381` (credit note), `386` (prepayment/advance invoice) — never
+  emitting credit notes or advances as plain invoices. Validated against the EN 16931
+  schematron per type.
 - **B2G:** deliver e-SLOG via **UJP** today (when invoicing public bodies).
 - **B2B:** build the exporter now; the **2028 mandate** becomes a feature flag + a delivery
   channel (access point / the SI exchange route as finalized in the ZEPDESED implementing
@@ -135,7 +150,7 @@ Responsibilities:
 - **CI/CD:** automated tests incl. a **fiscalization contract test** against FURS test certs;
   schema migrations reviewed; no secrets in repo.
 - **Observability:** structured logs (PII-redacted), metrics on EOR latency & PENDING_EOR
-  backlog, alerts on the 48h SLA, cert expiry, queue depth, failed VIES, period-close status.
+  backlog, alerts on the two-working-day SLA, cert expiry, queue depth, failed VIES, period-close status.
 - **Backups & DR:** point-in-time recovery (MariaDB binlog + `mariabackup`), immutable archive replication, tested restores —
   see [doc 05 §backups].
 

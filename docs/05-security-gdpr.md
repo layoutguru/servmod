@@ -23,8 +23,11 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 - Per-user **multiple credentials** (a key per device + a backup key) to avoid lock-out;
   enforce **at least one backup** at enrolment.
 - Store only **public keys + credential metadata** (credential id, AAGUID, sign-count, created/
-  last-used). Verify **sign-count** to detect cloned authenticators. Bind to the correct
-  **RP ID / origin** to stop phishing.
+  last-used). Treat **sign-count as a best-effort signal for device-bound authenticators only**
+  (hardware keys): synced passkeys (iCloud Keychain, Google Password Manager) report a constant
+  0 **by design**, so never alarm or block on a non-incrementing counter. Clone/abuse detection
+  relies primarily on **origin binding (RP ID)**, attestation for high-privilege enrolments,
+  and anomaly signals (new device + new IP, impossible travel).
 - **Account recovery** is the dangerous part: recovery requires admin approval + a second
   verified factor + full audit; never a simple "email me a reset link" for privileged roles.
 
@@ -89,8 +92,10 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 
 - **Append-only `AuditEvent`** ([doc 03 §11]) for every create/modify/view-sensitive/export/
   auth event: actor, action, entity, before/after (PII redacted), IP, device, request id, time.
-- **Immutable fiscal ledger** with optional **hash-chaining** ([doc 03 §6]) → silent
-  back-dating or row insertion is detectable.
+- **Immutable fiscal ledger** with **required hash-chaining + external anchoring** ([doc 03
+  §6]): the chain head is checkpointed to the WORM archive (optionally RFC 3161-timestamped)
+  and a scheduled job re-verifies — that anchor is what makes tampering by a privileged DB
+  user detectable; the in-DB chain alone only catches accidental/unprivileged changes.
 - Logs shipped to **write-once / restricted storage**; admins **cannot edit or delete** audit
   records. Retain audit logs in line with tax (10y) and security needs; review periodically.
 - **Alerting** on anomalies: mass exports, off-hours admin actions, repeated MFA failures,
@@ -143,8 +148,11 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
 
 ### 5.6 Breach response (Art. 33/34)
 - Documented **incident-response plan**: detect → contain → assess → **notify IP-RS within 72
-  hours** of becoming aware (if risk to individuals) → notify affected individuals if high
-  risk → post-mortem. Keep a breach register. Run tabletop drills.
+  hours** of becoming aware — notification is the **default**, skippable only where the breach
+  is *unlikely to result in a risk* to individuals (a narrow exception the controller must be
+  able to justify, Art. 33) → notify affected individuals directly where the breach likely
+  results in a **high** risk (Art. 34, a higher bar) → post-mortem. Keep a breach register.
+  Run tabletop drills.
 
 ### 5.7 Privacy & security by design (Art. 25/32)
 - Pseudonymise/encrypt PII, default to least exposure, build the above controls in from day one
@@ -198,6 +206,11 @@ Act), supervised by the **Information Commissioner (Informacijski pooblaščenec
   scoped data only.
 - Staff **onboarding/offboarding** checklist: provision least-privilege, **revoke on
   departure** (sessions, keys, secrets), security-awareness training.
+- **Operator PII after departure (tiered retention, §5.3 applied to staff):** the legally
+  required copy of a fiscal operator's tax number lives **immutably inside each FiscalRecord
+  snapshot** (10-year retention) — so on offboarding the live `User` row is deactivated and
+  its `tax_number`, TOTP secret and contact fields are **erased/pseudonymised**; historical
+  fiscal records remain intact and attributable without keeping live staff PII around.
 
 ---
 

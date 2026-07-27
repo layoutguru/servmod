@@ -44,9 +44,9 @@ background**, with thin light borders and gentle shadows.
 - **Ambient background:** a quiet gradient / mesh with a few blurred color "blobs" that the
   glass refracts; **static or very slow** (respects reduced-motion).
 - **Performance budget:** blur is GPU-expensive — cap the number of simultaneously blurred
-  layers, fall back to solid translucent fills on low-power devices and when
-  `prefers-reduced-transparency` is set, and never blur large scrolling tables (blur the
-  *frame*, not the rows).
+  layers, fall back to solid translucent fills on low-power devices, and never blur large
+  scrolling tables (blur the *frame*, not the rows). Reduced-transparency handling: see §3/§9
+  — the in-app toggle is the primary mechanism, not the media query.
 
 > **Guard rail:** glass is for **chrome and containers** (nav, cards, toolbars, modals,
 > sidebars), not for dense data rows or printable documents. Invoices print on solid white
@@ -79,7 +79,11 @@ Themes are just **different Tier-2 mappings**:
 - **Switching:** `auto` (follows OS `prefers-color-scheme`), `light`, `dark` — per-user
   preference, persisted; instant, no reload (CSS variables on `:root[data-theme]`).
 - **High-contrast theme** variant for accessibility, and a **"reduced transparency"** variant
-  that swaps glass for solid surfaces (auto-enabled on `prefers-reduced-transparency`).
+  that swaps glass for solid surfaces. **Primary control: an explicit toggle in user settings**
+  (§10) — `prefers-reduced-transparency` is honoured as progressive enhancement where
+  supported, but it currently works **only in Chromium browsers** (Safari doesn't implement
+  it at all — including on Apple's own platforms — and Firefox ships it disabled), so the
+  media query alone would strand most users who need the accommodation.
 - Implementation: **CSS custom properties**; no theme logic baked into components. Works with
   Tailwind (CSS-var-backed theme), vanilla CSS, or any framework.
 
@@ -93,8 +97,12 @@ Themes are just **different Tier-2 mappings**:
   in both themes: **success** (paid, verified), **warning** (PENDING_EOR, low stock, approaching
   Intrastat threshold), **danger** (overdue, failed fiscalization, errors), **info**, **neutral**.
 - **Domain status palette** (consistent everywhere — tickets, invoices, stock): e.g. Ticket
-  *Odprt / V delu / Čaka dele / Končan*, Invoice *Osnutek / Izdan / Potrjen (EOR) / Čaka EOR /
-  Stornirano*, each a labelled **pill/badge** with icon + color (never color alone — §9).
+  *Odprt / V delu / Čaka na dele / Končan*; Invoice pills combine the document status
+  ([doc 03 §5]: *Osnutek / Izdan / Popravljen*) with the fiscal state (*Čaka na EOR / Potrjen
+  (EOR)*). There is **no "Stornirano" state on an original invoice** — a storno is a separate
+  linked credit note ([doc 01 §6]); the original shows *Popravljen* with a link to its
+  dobropis. Each state is a labelled **pill/badge** with icon + color (never color alone —
+  §9).
 
 ---
 
@@ -145,7 +153,7 @@ theme-aware, i18n-aware, accessible, and has loading/empty/error states.
   [doc 09](09-scheduled-collective-invoicing.md)).
 - **Feedback & system:** Confirmation dialogs with **step-up auth** prompt ([doc 05 §1.2]) for
   finalize/refund, inline validation, global error boundary, offline/connectivity banner
-  (matters for the 48h FURS window).
+  (matters for the two-working-day FURS window).
 
 ### 7.1 Key screens
 Dashboard (KPIs + today's tickets + alerts) · Tickets board & detail · **Invoice editor &
@@ -188,14 +196,17 @@ Auth/passkey management ([doc 05]).
   -secondary`) guaranteed ≥ **4.5:1** against the *effective* (post-blur) surface; where blur
   can't guarantee it, add a subtle **scrim** behind text. Automated contrast tests in CI.
 - **Respect user prefs:** `prefers-reduced-motion` (kill parallax/blur animation),
-  `prefers-reduced-transparency` (solid surfaces), `prefers-contrast` (high-contrast theme),
-  forced-colors/Windows high-contrast.
+  `prefers-contrast` (high-contrast theme), forced-colors/Windows high-contrast;
+  `prefers-reduced-transparency` where supported (Chromium-only today — the settings toggle
+  in §10 is the reliable path, §3).
 - **Never color-only:** status uses icon + label + color.
 - **Keyboard & focus:** full keyboard nav, visible `--focus-ring`, logical order, focus trap in
   modals, skip links, ⌘K palette is keyboard-first.
 - **Screen readers:** semantic HTML + ARIA, labelled inputs, live regions for toasts/validation,
   table semantics; localised `aria-label`s (tie into §8).
-- **Targets:** ≥ 44×44px touch targets (technician mobile use).
+- **Targets:** WCAG 2.2 AA requires ≥ **24×24 px** (SC 2.5.8, with spacing exception) —
+  that's the conformance floor; we **aim for ≥ 44×44 px** on primary controls and all
+  technician-mobile touch targets (AAA / Apple HIG guidance, deliberately above AA).
 
 ---
 
@@ -259,7 +270,7 @@ The on-screen glass UI and the **printed document are deliberately different ren
 ---
 
 ## 13. UI/UX acceptance checklist
-- [ ] Dark, light & auto themes; high-contrast & reduced-transparency variants; instant switch.
+- [ ] Dark, light & auto themes; high-contrast & reduced-transparency variants (settings toggle primary; media query progressive); instant switch.
 - [ ] Glass used only for chrome/containers; data rows & documents stay crisp/solid.
 - [ ] Two-tier design tokens; zero hard-coded colors in components.
 - [ ] Full component kit with loading/empty/error + all states, theme- & i18n-aware.
@@ -267,5 +278,5 @@ The on-screen glass UI and the **printed document are deliberately different ren
 - [ ] Per-locale master-data & document text; **localised invoice printouts** (per-document language).
 - [ ] WCAG 2.2 AA: contrast-on-glass enforced, reduced-motion/transparency respected, keyboard + SR.
 - [ ] Backend-configurable branding, themes, statuses, document templates, languages, legends.
-- [ ] Mobile/technician layouts (≥44px targets); density toggle for data screens.
+- [ ] Mobile/technician layouts (24px AA floor, 44px goal on primary/touch controls); density toggle for data screens.
 - [ ] Print/PDF render target separate from UI; PDF/A-ready; ZOI/EOR/QR on fiscal docs.

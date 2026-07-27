@@ -1,4 +1,4 @@
-# 09 — Scheduled, Recurring & Collective Invoices (zbirni/skupni račun)
+# 09 — Scheduled, Recurring & Collective Invoices (zbirni račun)
 
 Three related-but-distinct capabilities the business asked for, plus their **Slovenian legal
 basis** and how they interact with **fiscal verification** ([doc 01 §3]). As ever: engineering
@@ -8,7 +8,7 @@ interpretation — **confirm with the accountant.**
 |------------|-----------|---------|
 | **Scheduled invoice** | A drafted invoice issued automatically at a chosen future date/time. | *načrtovani / odloženi račun* |
 | **Recurring invoice** | A template that auto-generates invoices on a repeating schedule (e.g. monthly maintenance contract). | *ponavljajoči se račun* |
-| **Collective invoice** | One invoice consolidating **many supplies/tickets** over a period into multiple lines. | **zbirni / skupni račun** |
+| **Collective invoice** | One invoice consolidating **many supplies/tickets** over a period into multiple lines. | **zbirni račun** |
 
 These overlap: a common case is a **recurring + collective** monthly invoice — "on the 1st of
 each month, bill customer X for all repairs completed last month as one multi-line invoice."
@@ -17,7 +17,8 @@ each month, bill customer X for all repairs completed last month as one multi-li
 
 ## 1. Legal basis & constraints (ZDDV-1)
 
-- **Collective invoice (skupni/zbirni račun)** is explicitly allowed: a taxable person who makes
+- **Collective invoice (zbirni račun; ZDDV-1 Art. 81 commentary also uses *skupni račun* — we
+  standardise on *zbirni račun*)** is explicitly allowed: a taxable person who makes
   **several separate supplies** of goods/services may issue **one invoice covering them**,
   **provided the VAT on all the listed supplies becomes chargeable within the same tax period**
   (the tax period in SI is typically the **calendar month**). → *A collective invoice must not
@@ -36,7 +37,7 @@ each month, bill customer X for all repairs completed last month as one multi-li
   **at the moment it is actually finalized/issued** (not when scheduled).
 
 ### 1.1 Fiscal verification implications ⭐ (critical)
-- **The 48h / ZOI-EOR machinery is unchanged** ([doc 01 §3]). A scheduled invoice is only
+- **The two-working-day / ZOI-EOR machinery is unchanged** ([doc 01 §3]). A scheduled invoice is only
   **fiscalized at the instant it is finalized**, using **that moment's** timestamp for the ZOI,
   and obtains its EOR then.
 - **Cash + scheduling is a contradiction** for fiscal law (cash invoices are verified at the
@@ -46,7 +47,7 @@ each month, bill customer X for all repairs completed last month as one multi-li
   it stays a *draft* and is only fiscalized when the cash is actually taken). Make this a
   hard rule, configurable but defaulting to "scheduled ⇒ non-cash".
 - A scheduled invoice that **does** require fiscalization (configured edge case) goes through
-  the normal real-time → PENDING_EOR path at finalize time, with the same 48h guarantee.
+  the normal real-time → PENDING_EOR path at finalize time, with the same two-working-day guarantee.
 
 ---
 
@@ -75,7 +76,7 @@ each month, bill customer X for all repairs completed last month as one multi-li
 - Use cases for a repair business: **maintenance/SLA contracts**, managed-device fleets,
   retainer customers, periodic consumables.
 
-### 2.3 Collective invoice (zbirni / skupni račun)
+### 2.3 Collective invoice (zbirni račun)
 - **Aggregates many source items** — completed tickets / deliveries / consumed parts / labour
   for **one customer within one VAT period** — into a **single multi-line invoice**.
 - Two ways to build it:
@@ -85,8 +86,11 @@ each month, bill customer X for all repairs completed last month as one multi-li
      all uninvoiced items for the customer into one invoice.
 - **Line grouping options (configurable):** one line per ticket, per part+labour, per day, or
   fully itemised; each line keeps a **back-reference** to its source ticket/movement
-  ([doc 03 §5]) for traceability and so an item can't be **double-invoiced** (mark source
-  `invoiced` atomically at finalize).
+  ([doc 03 §5]) for traceability and so an item can't be **double-invoiced** (source billing
+  status `uninvoiced` → `invoiced`, atomic at finalize). **Disputed line → credit note:** a
+  credit-note line references the specific `source_ref`s it corrects (not just the collective
+  invoice as a whole), flipping those items to **`credited`** — re-billing a credited item is
+  a deliberate, audited action, never an automatic re-sweep.
 - **VAT-period guard:** the builder only offers items whose chargeability is in the **same tax
   period** and **blocks** mixing periods (§1).
 - **Per-rate subtotals:** with many lines across rates, the document shows correct **per-VAT-
@@ -147,12 +151,13 @@ each month, bill customer X for all repairs completed last month as one multi-li
 - [ ] Collective invoice enforces **single VAT period**; per-rate subtotals correct.
 - [ ] Source items back-referenced and **cannot be double-invoiced** (atomic mark at finalize).
 - [ ] Scheduled/recurring default to **non-cash**; cash-scheduling blocked unless explicitly configured.
-- [ ] Fiscalization (if applicable) happens **at finalize time** with that timestamp's ZOI/EOR + 48h fallback.
+- [ ] Fiscalization (if applicable) happens **at finalize time** with that timestamp's ZOI/EOR + two-working-day fallback.
 - [ ] Numbering allocated at issue, gapless ([doc 03 §6]); scheduled drafts hold **no** number.
 - [ ] Durable, idempotent, crash-safe scheduler; Europe/Ljubljana schedules; audit + failure alerts.
 - [ ] Recurring profiles: pause/skip/end, edit affects future only, optional period sweep (recurring+collective).
 - [ ] Validation gate blocks auto-issue of a non-compliant invoice (alerts instead).
 - [ ] Fully backend-configurable (grouping, language, cut-off, retries, auto-send templates per locale).
+- [ ] e-SLOG/EN 16931 export uses the correct document-type code per document (380 invoice / 381 credit note / 386 advance), [doc 04 §5].
 
 ## Sources
 - ZDDV-1, 81. člen (obveznost in rok izdaje računov / collective & periodic invoices): https://www.racunovodstvo.net/zakonodaja/zddv/81-clen

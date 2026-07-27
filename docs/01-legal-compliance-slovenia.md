@@ -37,12 +37,17 @@ written here.
 
 ### 1.2 Who must charge VAT
 - A business becomes liable to register for VAT once taxable turnover in the last 12 months
-  exceeds the registration threshold (historically **€50,000**, with an EU SME cross-border
-  scheme on top). **Confirm the current threshold.** Below it, a business may be a
+  exceeds the registration threshold of **€60,000** (raised from €50,000 by the ZDDV-1
+  amendment effective **1 Jan 2025**; a transitional tolerance up to **€66,000** lets a
+  business that only marginally exceeds it stay unregistered mid-year, and the EU cross-border
+  SME scheme adds a €100,000 EU-wide cap on top). Below it, a business may be a
   *small taxpayer* (mali davčni zavezanec) and issues invoices **without VAT**, with the
   legend *"DDV ni obračunan na podlagi 1. odstavka 94. člena ZDDV-1"* (or the applicable
   article). The ERP must support **both modes** via a company-level flag, because kron.si may
   be VAT-registered today but the software should not hard-code it.
+- **VAT grouping** exists in Slovenia since **1 Jan 2026**: related companies may register as
+  a single VAT group. Out of scope for a single-entity shop, but if kron.si has affiliated
+  companies, the company model must be revisited (a single company flag can't model a group).
 
 ### 1.3 Tax point / chargeability
 VAT generally becomes chargeable when the supply is made (repair completed / parts handed
@@ -73,7 +78,7 @@ A **full invoice** for a VAT taxpayer must show:
 9. **VAT amount payable** (per rate), unless a special scheme applies.
 10. In case of **exemption / reverse charge / margin scheme**: the relevant **clause**
     referencing the ZDDV-1 article or the Directive 2006/112/EC article, or the wording
-    *"Reverse charge" / "Obrnjena davčna obveznost"*, *"Maržna ureditev — rabljeno blago"*,
+    *"Reverse charge" / "Obrnjena davčna obveznost"*, *"Posebna ureditev – rabljeno blago"*,
     *"Oproščeno DDV po … členu ZDDV-1"*, etc.
 11. If self-billed: *"Samofakturiranje"*. If a tax representative is liable: their details.
 
@@ -98,6 +103,15 @@ fiscalization is finalized.
 - Rounding: compute VAT per rate group on the summed net, then round to **2 decimals**
   (round-half-up). Keep line-level values at higher precision internally to avoid drift; the
   *printed* totals must foot exactly.
+- **Line-level distribution (canonical algorithm):** because the document also shows per-line
+  net/VAT/gross (and e-SLOG requires line-level VAT fields), the once-rounded **rate-group VAT
+  total is redistributed to lines by largest remainder** (the N residual cents go to the N lines
+  with the largest fractional remainders) so that line VAT amounts **always sum exactly** to
+  the rate-group total. This — true largest-remainder — is the single canonical algorithm;
+  do not substitute "push everything onto the last line", which is a *different* algorithm
+  and would make renderers disagree. The PDF renderer, the fiscal
+  payload and the e-SLOG exporter all reference this one algorithm — never three independent
+  roundings.
 
 ---
 
@@ -116,14 +130,28 @@ fiscally verified by FURS in real time, before it is handed to the customer.**
   small (non-VAT) taxpayers**. So even if kron.si were below the VAT threshold, cash invoices
   still need fiscalization.
 
-> **Design consequence:** the *payment method* chosen at the point of issue decides whether the
-> document must go through the FURS round-trip. The ERP must therefore know the payment method
-> **at issue time**, and re-fiscalize if a draft is later paid in cash.
+> **Design consequence:** whether the document must go through the FURS round-trip is decided
+> by **how it is actually (to be) paid at issue time** — derived from the payment(s) recorded/
+> expected on the invoice, not a single header field. Three hard rules the engine enforces:
+>
+> 1. **Mixed payment (part cash/card, part transfer):** if **any** cash-type payment touches
+>    the invoice at issue, the invoice is **fiscalized** (fiscalize-if-any-cash; confirm the
+>    exact convention with the accountant, but default to fiscalizing the whole document —
+>    never leave a cash-touched invoice unverified).
+> 2. **Draft later paid in cash:** a *draft* is fiscalized at the moment cash is taken.
+> 3. **Finalized non-cash invoice later settled in cash** (customer said "transfer", pays cash
+>    at pickup): the finalized document is immutable and **cannot retroactively become
+>    fiscalized**. The engine must either (a) for walk-in retail, defer finalize until the
+>    payment method is confirmed at handover, or (b) if already finalized as non-cash, cancel
+>    via credit note and reissue as a fiscalized cash invoice at the moment of payment. Both
+>    paths are first-class UI flows, not workarounds.
 
 ### 3.2 Prerequisites (one-time setup, before the first fiscalized invoice)
-1. **Dedicated digital certificate** for fiscal verification, obtained from FURS (the
-   issuance was moved to FURS; previously MJU). Used to sign the ZOI and authenticate to the
-   FURS web service.
+1. **Dedicated digital certificate** for fiscal verification. The request is submitted via
+   **eDavki** (FURS, form DPR-PridobitevDP), and the certificate (.p12) is then generated and
+   downloaded from the **MJU (Ministry of Public Administration) digital-certificate portal**
+   using the reference number/password issued through eDavki — both agencies are involved.
+   Used to sign the ZOI and authenticate to the FURS web service.
 2. **Register every business premises** (`poslovni prostor`) via **eDavki** *before* issuing
    the first invoice from it. Each gets a **Business Premises ID** (you choose the label).
    Premises can be **immovable** (a shop — needs the cadastral data: building/part numbers) or
@@ -141,14 +169,19 @@ The number is a **three-part token**:
 
 ```
 <BusinessPremisesID>-<ElectronicDeviceID>-<SequentialNumber>
-e.g.  POSLOVALNICA1-BLAG1-2026-000123   (label format is your choice within rules)
+e.g.  POSLOVALNICA1-BLAG1-000123   (label format is your choice within rules)
 ```
-- The **sequential number must be continuous, gapless, and ascending** per (premises, device)
-  combination within a **calendar year** (reset annually only if your internal act says so —
-  many keep continuous; **decide in the internal act and encode that choice as config**).
+- **Numbering mode is a legal choice (ZDavPR Art. 5), fixed in the internal act:** the gapless
+  ascending sequence runs either **(a) centrally per business premises** (one sequence shared
+  by all electronic devices in that premises) **or (b) per individual electronic device**.
+  The ERP must support both modes as tenant config and enforce the chosen one consistently —
+  do not assume the (premises, device) pair is itself the unit of continuity.
+- The **sequential number must be continuous, gapless, and ascending** within the chosen unit,
+  with the reset period (annual vs continuous) likewise **defined in the internal act and
+  encoded as config** (`reset_policy`).
 - The ERP must guarantee **no gaps and no reuse**, even under concurrency/crash — see
-  [doc 03 §numbering](03-data-model.md) (DB sequence per premises+device, allocated inside the
-  same transaction that persists the invoice).
+  [doc 03 §numbering](03-data-model.md) (DB sequence allocated inside the same transaction
+  that persists the invoice).
 
 ### 3.4 ZOI — Zaščitna oznaka izdajatelja (issuer protective mark)
 Computed **locally by the ERP** (proves the invoice originated from you even if FURS is
@@ -179,11 +212,15 @@ The ZOI is printed on the receipt and embedded in the QR/PDF417/Code128.
 ### 3.6 Offline / FURS-unreachable path (must be designed, not optional)
 - If FURS cannot be reached at issue time, you **may still issue** the invoice **with the ZOI
   only** (no EOR yet).
-- You **must obtain the EOR within 48 hours (2 business days)** by re-sending the stored
-  invoice once connectivity returns.
+- You **must obtain the EOR within two working days (dva delovna dneva)** from the day the
+  connection was interrupted, by re-sending the stored invoice once connectivity returns.
+  This is a **working-day count, not a rolling 48-hour clock** (a Friday-afternoon outage
+  extends over the weekend). If justified reasons persist beyond that window, the data must be
+  sent **no later than the first working day after the reason ceases**.
 - The ERP needs a **durable retry queue** of un-verified invoices, a worker that drains it,
-  alerting if anything approaches the 48h limit, and a way to reprint/record the EOR once
-  received. **This queue is mission-critical** — see [doc 04 §FURS service](04-architecture.md).
+  alerting as the two-working-day deadline approaches (computed against the SI working-day
+  calendar), and a way to reprint/record the EOR once received. **This queue is
+  mission-critical** — see [doc 04 §FURS service](04-architecture.md).
 
 ### 3.7 The QR / barcode on the receipt
 - The receipt carries a machine-readable code (**QR**, or **PDF417**, or **Code 128**)
@@ -213,7 +250,7 @@ The ZOI is printed on the receipt and embedded in the QR/PDF417/Code128.
 ### 4.1 Domestic reverse charge (ZDDV-1 Art. 76.a)
 Liability shifts to the **buyer** for specific listed supplies — principally **construction
 work, supply of staff for it, certain immovable property, waste/scrap & recyclable material,
-and greenhouse-gas allowances**. These require the legend *"Obrnjena davčna obveznost"* and a
+and (commonly cited but **unverified for the SI list — confirm with the accountant**) greenhouse-gas emission allowances**. These require the legend *"Obrnjena davčna obveznost"* and a
 **special Art. 76.a report**.
 - **Relevance to us:** mostly when **selling scrap/e-waste** (old boards, batteries handed to
   a recycler that is a taxable person) → may fall under the **waste/scrap** category. Build the
@@ -245,7 +282,7 @@ and greenhouse-gas allowances**. These require the legend *"Obrnjena davčna obv
 If kron.si **buys and resells used devices** (trade-ins, refurbished phones bought from
 private individuals/non-taxable persons), the **margin scheme** lets you charge VAT only on
 the **margin** (sale − purchase), not the full price, and **no VAT is shown separately** on the
-sale invoice — instead the legend *"Posebna ureditev — rabljeno blago / margin scheme"*.
+sale invoice — instead the exact statutory legend *"Posebna ureditev – rabljeno blago"* (an English gloss may accompany it for the customer, but the Slovenian wording is the mandated text).
 - The ERP must support a **margin-scheme item type**: track per-unit purchase cost, compute
   VAT on margin, suppress the VAT breakdown on the customer document, and keep a **separate
   margin-scheme register**. Standard-VAT and margin-scheme lines **cannot** be mixed loosely;
@@ -253,10 +290,18 @@ sale invoice — instead the legend *"Posebna ureditev — rabljeno blago / marg
 
 ### 4.5 Warranty repairs
 - Repair done under **manufacturer warranty**, billed to the **manufacturer/importer** (not
-  the consumer): a normal B2B invoice to the warrantor (22 %, or reverse charge / intra-EU if
-  the warrantor is abroad). The consumer pays €0 but **still receives documentation**; if no
-  payment is taken, no fiscal verification is triggered (no cash). Model "warranty payer" as
-  a billing party distinct from the device owner.
+  the consumer). Model "warranty payer" as a billing party distinct from the device owner.
+- **Consumer-side document:** the consumer receives a **non-fiscal handover/delivery note**
+  (prevzemni list) documenting the warranty work — *not* a €0 tax invoice; no payment → no
+  fiscal verification.
+- **Warrantor-side invoice & place of supply:** a normal B2B service invoice to the warrantor.
+  If the warrantor is a **Slovenian** taxable person → 22 %. If the warrantor is a taxable
+  person **in another EU state** → the B2B general place-of-supply rule (Art. 44 of Directive
+  2006/112/EC / ZDDV-1 Art. 25) puts the supply where the recipient is established: invoice
+  **without Slovenian VAT**, legend *"Reverse charge — Obrnjena davčna obveznost"*, and report
+  it in the **RP-O**. If the warrantor is **outside the EU** → outside the scope of Slovenian
+  VAT (with the appropriate legend). The engine derives this from the warrantor's country +
+  VAT ID (VIES-checked), same logic as any B2B service export.
 
 ---
 
@@ -284,8 +329,10 @@ document**:
   charge). Must contain all Art. 82 elements **plus an explicit reference to the original
   invoice** (number + date) and the reason. VAT is corrected per ZDDV-1 (the supplier reduces
   output VAT; if the buyer deducted input VAT they must correct it — the document is the
-  evidence). If the original was a **cash** invoice, the credit note that returns cash is
-  **itself fiscally verified** (it's a cash transaction → ZOI/EOR).
+  evidence). **A credit note that itself pays out cash is fiscally verified (ZOI/EOR),
+  regardless of how the original invoice was paid** — fiscalization always follows the actual
+  cash flow of the document at hand (§3.1), so a bank-transfer original refunded in cash at
+  the counter still produces a fiscalized credit note.
 - **Debit note (bremepis):** increases the original (under-charged). Same referencing rules.
 - **Storno (full cancellation):** a credit note for the full amount; the original remains in
   the ledger (visible, marked corrected) — it is *not* removed.
@@ -327,6 +374,11 @@ document**:
 
 - **VAT ledgers:** keep the **issued-invoices book** and **received-invoices book** (knjiga
   izdanih/prejetih računov) with all data needed for the VAT return. The ERP generates both.
+- **Mandatory electronic ledger submission (since 1 Jul 2025):** every VAT payer must submit
+  the output-VAT ledger (evidenca obračunanega DDV) and input-VAT-deduction ledger (evidenca
+  odbitka DDV) to FURS as **structured XML via eDavki**, on the same monthly/quarterly cadence
+  as the DDV-O. Submitting ≥3 working days before the DDV-O deadline yields a FURS-prepared
+  **pre-filled DDV-O**. The ERP's ledger export must conform to this XML schema exactly.
 - **Retention:** **invoices and accounting records — 10 years**; **real-estate-related — 20
   years**. Records must remain **authentic, integral and legible** for the whole period.
 - **Electronic storage** is permitted if it prevents alteration/deletion and allows
@@ -334,17 +386,23 @@ document**:
   integrity hashing (doc 05).
 - **VAT return (DDV-O):** typically **monthly** (or quarterly for smaller taxpayers), due by a
   fixed day of the following month; **RP-O** recapitulative by the 20th. The ERP must export
-  the figures that populate each box of **DDV-O**, **PD-O**, **RP-O**, and the **Art. 76.a
-  report** where used.
+  the figures that populate each box of **DDV-O**, **RP-O**, and the **Art. 76.a report
+  (FURS form PD-O)** where used — PD-O is the 76.a report's form name, not a separate export.
 
 ---
 
 ## 9. Consumer-protection / sector rules that touch the documents
 
 - **Repair estimates & consent:** Slovenian consumer-protection practice expects a **cost
-  estimate (predračun)** and customer approval before chargeable work, and a **warranty on the
-  repair** itself. Model: estimate → customer approval (timestamped, ideally e-signed) →
-  work → invoice.
+  estimate (predračun)** and customer approval before chargeable work. Model: estimate →
+  customer approval (timestamped, ideally e-signed) → work → invoice.
+- **Warranty legal bases (keep them distinct in the model):** ZVPot-1's mandatory **garancija
+  za brezhibno delovanje** (≥1 year) applies to the **sale of listed technical goods**, and
+  under the current ZVPot-1 claims run **against the manufacturer**, with sellers owing 3
+  years of paid after-sales servicing post-guarantee. **Defect liability for the repair
+  service itself** is governed by the **Code of Obligations (Obligacijski zakonik, Arts. 619
+  ff. — podjemna pogodba)**, not ZVPot-1 directly. The ERP tracks both: goods-sale guarantees
+  (trade-ins/refurbished sales) and repair-work defect liability, with separate clocks.
 - **Warranty / guarantee tracking:** track the repair warranty period and the parts' supplier
   warranty (for your own RMA back to the supplier).
 - **WEEE / battery handling:** disposal of e-waste and batteries has environmental-fee and
@@ -360,9 +418,9 @@ document**:
 |-------------|-------------|-----|
 | Art. 82 invoice fields present | Invoice template + validation gate before finalize | 02 §invoices, 03 |
 | Simplified invoice ≤ €100 + buyer details when deductible | Document-type rules | 02 |
-| Gapless sequential numbering per premises+device | DB sequence inside finalize txn | 03 |
+| Gapless numbering in the internal-act-chosen mode (per premises OR per device) | DB sequence inside finalize txn | 03 |
 | ZOI computed (RSA-SHA256 → MD5 → 32 hex) | FURS fiscalization service | 04 |
-| EOR obtained in real time; ≤48h offline fallback | Durable verification queue + worker | 04 |
+| EOR real-time; offline fallback ≤ 2 working days (SI calendar) | Durable verification queue + worker | 04 |
 | QR/PDF417 + ZOI/EOR/operator on receipt | Receipt renderer | 02, 04 |
 | Business premises + devices registered; internal act | Setup/admin module + config | 02, 03 |
 | Operator tax number on each cash invoice | User profile (encrypted PII) | 03, 05 |
@@ -370,9 +428,9 @@ document**:
 | Intra-EU acquisition reverse charge + VIES + RP-O | Purchasing module + tax engine | 02, 04 |
 | Intrastat threshold tracking & alert | Reporting module | 02 |
 | Margin scheme register (if reselling used) | Item type + separate register | 02, 03 |
-| e-SLOG 2.0 / EN 16931 export; UJP for B2G | e-invoice exporter (render target) | 04 |
+| e-SLOG 2.0 / EN 16931 export incl. doc-type codes (380/381/386); UJP for B2G | e-invoice exporter (render target) | 04 |
 | 10-year immutable, legible retention | WORM archive + integrity hashes | 05 |
-| DDV-O / PD-O / RP-O / 76.a exports | Reporting module | 02 |
+| DDV-O / RP-O / Art. 76.a (form PD-O) exports; VAT-ledger XML to eDavki (mandatory since 1 Jul 2025) | Reporting module | 02 |
 | Personal data protected (GDPR/ZVOP-2) | Whole of doc 05 | 05 |
 
 ---

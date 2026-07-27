@@ -66,7 +66,7 @@ backlog**, not all of it ships at once.
     "which model is trending in for screen repairs?" over the ERP data, **read-mostly**, with
     RBAC ([doc 05 §2]) — never bypassing the fiscal/ledger guarantees.
 24. **Offline-first technician PWA** — bench/van app that works without signal, queues stock
-    moves & labour, syncs later — pairs with the **48h FURS offline path** ([doc 01 §3.6]).
+    moves & labour, syncs later — pairs with the **two-working-day FURS offline path** ([doc 01 §3.6]).
 
 ## F. Platform & ecosystem
 25. **Open API + webhooks** — let ServiceApp ([doc 10]), the accountant's software ([doc 07
@@ -90,5 +90,5 @@ backlog**, not all of it ships at once.
 | **Delight / advanced** | later | 3, 6, 9, 13, 18, 19, 21, 23, 24, 27, 28 |
 
 > **Guard rail:** none of these may weaken the non-negotiables — gapless numbering, immutable
-> fiscal ledger, real-time/48h FURS verification, VAT correctness, 10-year retention, and
+> fiscal ledger, real-time/two-working-day FURS verification, VAT correctness, 10-year retention, and
 > GDPR. Innovation lives **on top of** the compliant core, never around it.

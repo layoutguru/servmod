@@ -17,7 +17,7 @@ size and the build-vs-buy decision ([doc 04 §9]).
 **Goal: issue a 100 %-legal, fiscally-verified invoice from a ticket.**
 - Company/premises/device/rate config; user accounts with **tax numbers** + **passkeys/MFA**.
 - Invoice object + Art. 82/83 **validation gate**; gapless **numbering** inside finalize txn.
-- **Fiscalization service:** ZOI → EOR, QR/PDF417, **offline PENDING_EOR queue + 48h SLA**
+- **Fiscalization service:** ZOI → EOR, QR/PDF417, **offline PENDING_EOR queue + two-working-day SLA**
   ([doc 01 §3], [doc 04 §4]).
 - Payments (cash/card/transfer) deciding fiscalization; PDF + thermal receipt (reuse Smarty
   `printticket.tpl` styling + `$_language`).
@@ -44,7 +44,7 @@ size and the build-vs-buy decision ([doc 04 §9]).
 - **Posting-rule engine** + chart-of-accounts mapping; **journal export** to accountant
   ([doc 07]).
 - Inventory valuation/NRV, COGS, receivables/payables ageing, doubtful-debt allowance.
-- **DDV-O / PD-O** exports in eDavki-expected formats; period lock/close; AJPES annual-report
+- **DDV-O** + **VAT-ledger XML** exports in the eDavki schemas (mandatory since 1 Jul 2025); Art. 76.a (PD-O) capability; period lock/close; AJPES annual-report
   figures.
 - Management dashboards (margin, utilization, turnaround, stock turnover).
 
@@ -67,7 +67,7 @@ size and the build-vs-buy decision ([doc 04 §9]).
 
 ## MVP cut (if you must ship the minimum legal thing first)
 **Phase 0 + Phase 1 only**: configured company/premises/devices, passkey/MFA login, ticket →
-validated invoice → **ZOI/EOR/QR** with the 48h offline fallback, credit notes, immutable
+validated invoice → **ZOI/EOR/QR** with the two-working-day offline fallback, credit notes, immutable
 ledger + 10-year archive, basic VAT book. That is the smallest system that lets kron.si
 **legally take money for a repair**. Everything else optimises operations on top of a compliant
 core.
@@ -82,8 +82,8 @@ core.
 | Risk | Mitigation |
 |------|-----------|
 | FURS spec changes / cert expiry | Version-pinned isolated service; expiry alerts; test env in CI. |
-| Numbering gaps under crash | Atomic allocation in finalize txn; recovery reconciliation; documented guarantee. |
-| 48h EOR window missed in an outage | Durable DB-backed queue, drained on recovery, SLA alerting. |
+| Crash during finalize (print/EOR failures, double-submit) | Number allocation commits atomically with the invoice (rollback = counter also rolls back → structurally gapless); idempotent finalize + resend/reprint on recovery. |
+| Two-working-day EOR window missed in an outage | Durable DB-backed queue, drained on recovery, SLA alerting. |
 | Wrong VAT treatment (rates/reverse charge/margin) | Rates & rules as validity-dated config; accountant sign-off; VIES at source. |
 | Tax retention vs GDPR erasure conflict | Tiered/field-level retention; statutory data preserved, rest erasable ([doc 05 §5.3]). |
 | Build effort underestimated | Consider buying fiscalization/e-SLOG; phase ruthlessly; MVP first. |

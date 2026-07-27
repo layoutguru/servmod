@@ -26,7 +26,7 @@ modern **dark/light "Apple-glass" UI** localised in **Slovenian / English / Germ
 | 04 | [Architecture & integrations](04-architecture.md) | Tech stack, how it bolts onto the existing servmod/Smarty ticketing app, the **FURS fiscalization microservice**, e-SLOG, accounting & supplier integrations. |
 | 05 | [Security & GDPR](05-security-gdpr.md) | **Passkeys/WebAuthn, 2FA/MFA**, RBAC, encryption, audit trail, GDPR (RoPA, retention, DSAR, breach), backups & DR. |
 | 08 | [UI / UX design system](08-ui-design-system.md) | Modern **dark/light "Apple-glass"** design language, tokens, component kit, **SL/EN/DE** i18n (UI + localised printouts), accessibility, **fully backend-configurable** theming. |
-| 09 | [Scheduled, recurring & collective invoices](09-scheduled-collective-invoicing.md) | **Scheduled/deferred** invoices, **recurring** (contracts), **collective/zbirni račun** — legal basis, fiscal-verification rules, scheduler architecture. |
+| 09 | [Scheduled, recurring & collective invoices](09-scheduled-collective-invoicing.md) | **Scheduled/deferred** invoices, **recurring** (contracts), **collective invoice / zbirni račun** — legal basis, fiscal-verification rules, scheduler architecture. |
 | 10 | [ServiceApp integration & billing migration](10-serviceapp-integration-billing.md) | Bridging the existing **Kayako-based ServiceApp** into the ERP: billing-data mapping, migration strategy, and exactly what's needed from the DB dump. |
 | 11 | [Outside-the-box features](11-outside-the-box-features.md) | High-value extensions — portal, trade-in/margin, care plans, IMEI/warranty lookup, OCR, ML forecasting, fraud detection, open API, franchise mode. |
 | 06 | [Delivery roadmap](06-roadmap.md) | Phased plan, milestones, risks, MVP cut. |

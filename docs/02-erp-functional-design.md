@@ -30,7 +30,10 @@ Customer & device intake
         ▼
 Diagnosis ──► Estimate (predračun)  ──► Customer approval (timestamped/e-signed)
         │                                        │
-        │                                  declines → return device, close, (diag fee?)
+        │                                  declines → diagnostic-fee invoice (if charged,
+        │                                  own small invoice, fiscalized per payment method;
+        │                                  or explicit waive) → advance refunded via credit
+        │                                  note if one was taken → return device, close
         ▼
 Parts reservation ──► (parts in stock? ) ──► if not: Purchase Order → Goods receipt
         ▼
@@ -45,6 +48,11 @@ Invoice issued  ──► payment method?
 Payment recorded ──► device handed over ──► repair warranty starts
         ▼
 (Later) return/complaint → Credit note (dobropis), itself fiscalized if cash refund
+
+Not collected? Ready-for-pickup ──(configurable clock)──► ready_uncollected
+        ├─ periodic storage-fee lines (configurable, announced in T&Cs at intake)
+        ├─ formal notice(s) to customer (documented, per abandoned-goods rules)
+        └─ terminal: disposed (WEEE write-off) / sold to recover costs / scrapped
 ```
 
 Each transition is a **state**, each state change is **audit-logged** (doc 05), and the
@@ -67,6 +75,9 @@ later credit note.
 - If paid in cash/card → **fiscalized**.
 - On final invoice, the advance is **deducted** with a reference line; net cash collected at
   the end matches.
+- **Advance refund (repair declined / device unrepairable):** a credit note is issued
+  **against the advance invoice itself** (not against any final invoice), fiscalized if the
+  refund is paid out in cash; the ticket closes with status `advance_refunded`.
 
 ### 2.3 Invoice (račun) — the central document
 Mandatory engine behaviour (enforces [doc 01 §2]):
@@ -88,9 +99,15 @@ Mandatory engine behaviour (enforces [doc 01 §2]):
   "promote to full invoice" adds buyer details (required if the buyer needs to deduct VAT).
 
 ### 2.4 Payments & cash handling
-- Record payment(s) against an invoice; partial payments allowed. Payment method drives
-  fiscalization. Cash drawer / daily Z-report (gotovinski izkupiček) per business premises &
-  operator for reconciliation.
+- Record payment(s) against an invoice; partial payments allowed. Fiscalization is derived
+  from the **aggregate of payments** (any cash-type payment ⇒ fiscalize; mixed and
+  flipped-method cases per the hard rules in [doc 01 §3.1]).
+- **Cash sessions (drawer management):** each premises/operator works inside a **CashSession**
+  — opened with a counted **opening float**, records non-sale **cash movements** (petty cash
+  in/out with reason), and closes with a counted total vs the computed expected amount; the
+  **variance** is recorded and must be explained. The daily **Z-report** (gotovinski
+  izkupiček) is a generated document referencing the session and every fiscal receipt issued
+  within it. Entities in [doc 03 §5].
 - POS/card terminal integration optional (capture card vs cash split).
 
 ### 2.5 Credit / debit notes & storno (enforces [doc 01 §6])
@@ -111,7 +128,7 @@ Mandatory engine behaviour (enforces [doc 01 §2]):
 
 ### 2.7 Scheduled, recurring & collective invoices
 - **Scheduled/deferred** invoices, **recurring** invoices (maintenance/SLA contracts), and
-  **collective invoices (zbirni/skupni račun)** that consolidate many tickets/deliveries for one
+  **collective invoices (zbirni račun)** that consolidate many tickets/deliveries for one
   customer over a VAT period into one multi-line document — full design, legal basis and the
   fiscal-verification rules in **[doc 09](09-scheduled-collective-invoicing.md)**. (Key rule:
   scheduling defaults to non-cash, because cash invoices fiscalize at the point of payment.)
@@ -141,6 +158,20 @@ Mandatory engine behaviour (enforces [doc 01 §2]):
 ### 3.4 RMA to supplier
 - Defective/wrong parts returned to supplier under their warranty; tracked so a customer-side
   warranty repair can be reclaimed.
+
+### 3.5 Purchase returns & supplier credit notes
+- Wrong/damaged/over-delivered goods (outside warranty RMA) go back with a **purchase return**:
+  a reversing StockMovement (return-to-supplier) plus a **SupplierCreditNote** referencing the
+  original supplier invoice / goods receipt — correcting the **received-invoices VAT ledger**
+  (input-VAT reduction in the period the credit note is issued) and the previously posted
+  landed cost/valuation ([doc 07]). Entity in [doc 03 §8].
+
+### 3.6 Pricing & price lists
+- Prices resolve through **validity-dated price lists**: customer/contract price list →
+  shop/location list → default catalogue price ([doc 03 §7]). B2B fleet/SLA customers get
+  negotiated rates; recurring profiles ([doc 09]) reference a price list. The resolved price
+  is **snapshotted onto the invoice line** (same pattern as the VAT rate) so later list
+  changes never mutate issued documents.
 
 ---
 
@@ -180,6 +211,14 @@ Every part has a **quantity per location**. Movements are the only way stock cha
 | Adjustment (stocktake) | ± with reason, approval, audit |
 | Write-off (damaged/WEEE) | − with reason + disposal record (doc 01 §9) |
 
+**Hard stock rules:**
+- **No negative stock:** a consumption/transfer that would drive `qty_on_hand` below zero at a
+  location is **blocked**; an elevated-permission override (with mandatory reason, audited)
+  exists for the real-world "technician consumed from central without transferring first" case
+  — the override records the implied transfer rather than going negative silently.
+- **Stocktake freeze:** a location in `stocktake_in_progress` blocks new transfers/consumptions
+  against it until the count closes; late movements are logged as post-count adjustments.
+
 ### 5.2 Technician warehouses — the key design point
 - When a technician takes parts from central, that's a **transfer** → the parts now live in
   *their* location and are *their* accountability.
@@ -195,6 +234,11 @@ Every part has a **quantity per location**. Movements are the only way stock cha
 ### 5.3 Serialized & batch parts
 - Serialized parts (expensive components) tracked individually end-to-end (which serial went
   into which device/ticket) — supports warranty/recall and theft control.
+- **DOA / mid-repair part swap:** if an installed part turns out dead-on-arrival, the flow is:
+  reverse the original consumption with a movement **tagged for supplier RMA** (never back to
+  sellable stock), consume the replacement serial, and — if the original was already invoiced —
+  issue a credit note + replacement line pair referencing the original document (immutability
+  preserved, [doc 01 §6]); `SerialUnit.warranty_until` reflects the part actually installed.
 
 ### 5.4 Valuation
 - Inventory valued per SRS/IAS 2 — **weighted-average or FIFO** at cost (purchase price +
@@ -206,11 +250,18 @@ Every part has a **quantity per location**. Movements are the only way stock cha
 ## 6. Export, reporting & accountant hand-off
 
 ### 6.1 Statutory / tax exports ([doc 01 §8])
-- **VAT books:** issued-invoices and received-invoices ledgers.
-- **DDV-O** figures (VAT return), **PD-O**, **RP-O** (recapitulative/EC Sales List), **Art.
-  76.a report** when used.
+- **VAT books:** issued-invoices and received-invoices ledgers — **submitted to FURS as
+  structured XML via eDavki every period (mandatory since 1 July 2025**, [doc 01 §8]).
+- **DDV-O** figures (VAT return), **RP-O** (recapitulative/EC Sales List), and the **Art.
+  76.a report (form PD-O)** when used.
 - **Intrastat** dataset + threshold-tracking alert.
-- All exportable as the **eDavki-expected formats** and as CSV/XLSX for the accountant.
+- All exportable in the **eDavki XML schemas** and as CSV/XLSX for the accountant.
+
+### 6.1a Receivables & dunning (B2B on-credit invoices)
+- Overdue-invoice dashboard (ageing buckets), **configurable reminder cadence** (email/SMS,
+  per-locale templates), optional statutory late-payment interest line, escalation notes, and
+  a privileged **write-off to bad debt** action posting per [doc 07 §5]. Ties the operational
+  collections flow to the accounting treatment.
 
 ### 6.2 Accounting integration
 - **Journal export** to the accounting package (e.g. via the unified chart-of-accounts mapping,
